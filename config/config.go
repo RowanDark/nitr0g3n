@@ -11,6 +11,7 @@ import (
 const (
 	ModeActive  = "active"
 	ModePassive = "passive"
+	ModeAll     = "all"
 )
 
 // Format represents an output format option.
@@ -39,7 +40,7 @@ func BindFlags(cmd *cobra.Command) *Config {
 
 	flags := cmd.PersistentFlags()
 	flags.StringVarP(&cfg.Domain, "domain", "d", "", "Target domain to investigate")
-	flags.StringVarP(&cfg.Mode, "mode", "m", string(ModePassive), "Enumeration mode to use (active or passive)")
+	flags.StringVarP(&cfg.Mode, "mode", "m", string(ModePassive), "Enumeration mode to use (active, passive, or all)")
 	flags.StringVarP(&cfg.OutputPath, "output", "o", "", "Optional file path to write results")
 	flags.BoolVarP(&cfg.Verbose, "verbose", "v", false, "Enable verbose logging output")
 	flags.StringVar((*string)(&cfg.Format), "format", string(FormatJSON), "Output format (json, csv, txt)")
@@ -56,10 +57,10 @@ func (c *Config) Validate() error {
 	}
 
 	switch c.Mode {
-	case ModeActive, ModePassive:
+	case ModeActive, ModePassive, ModeAll:
 		// valid
 	default:
-		return fmt.Errorf("invalid mode %q: expected %q or %q", c.Mode, ModeActive, ModePassive)
+		return fmt.Errorf("invalid mode %q: expected %q, %q, or %q", c.Mode, ModeActive, ModePassive, ModeAll)
 	}
 
 	format := strings.ToLower(strings.TrimSpace(string(c.Format)))

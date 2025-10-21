@@ -9,6 +9,7 @@ import (
 
 	"github.com/yourusername/nitr0g3n/config"
 	"github.com/yourusername/nitr0g3n/output"
+	"github.com/yourusername/nitr0g3n/passive/certtransparency"
 )
 
 var cfg *config.Config
@@ -47,6 +48,25 @@ infrastructure quickly and accurately.`,
 
 		if cfg.Domain == "" {
 			cmd.Println("No target domain specified. Use --domain to set a target or see --help for more details.")
+			return nil
+		}
+
+		if cfg.Mode == config.ModePassive || cfg.Mode == config.ModeAll {
+			ctClient := certtransparency.NewClient()
+			subdomains, err := ctClient.Enumerate(cmd.Context(), cfg.Domain)
+			if err != nil {
+				return fmt.Errorf("certificate transparency lookup: %w", err)
+			}
+
+			for _, subdomain := range subdomains {
+				record := output.Record{
+					Subdomain: subdomain,
+					Source:    "crt.sh",
+				}
+				if err := writer.WriteRecord(record); err != nil {
+					return fmt.Errorf("writing record: %w", err)
+				}
+			}
 		}
 
 		return nil
