@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -31,6 +32,9 @@ type Config struct {
 	OutputPath string
 	Verbose    bool
 	Format     Format
+	Sources    []string
+
+	VirusTotalAPIKey string
 }
 
 // BindFlags registers the shared command-line flags and returns a Config
@@ -44,6 +48,7 @@ func BindFlags(cmd *cobra.Command) *Config {
 	flags.StringVarP(&cfg.OutputPath, "output", "o", "", "Optional file path to write results")
 	flags.BoolVarP(&cfg.Verbose, "verbose", "v", false, "Enable verbose logging output")
 	flags.StringVar((*string)(&cfg.Format), "format", string(FormatJSON), "Output format (json, csv, txt)")
+	flags.StringSliceVar(&cfg.Sources, "sources", nil, "Comma-separated list of passive sources to query")
 
 	return cfg
 }
@@ -71,6 +76,25 @@ func (c *Config) Validate() error {
 		c.Format = FormatJSON
 	default:
 		return fmt.Errorf("invalid output format %q: expected json, csv, or txt", c.Format)
+	}
+
+	if len(c.Sources) > 0 {
+		normalised := make([]string, 0, len(c.Sources))
+		for _, source := range c.Sources {
+			source = strings.ToLower(strings.TrimSpace(source))
+			if source == "" {
+				continue
+			}
+			normalised = append(normalised, source)
+		}
+		c.Sources = normalised
+	}
+
+	if c.VirusTotalAPIKey == "" {
+		c.VirusTotalAPIKey = strings.TrimSpace(os.Getenv("NITR0G3N_VIRUSTOTAL_API_KEY"))
+	}
+	if c.VirusTotalAPIKey == "" {
+		c.VirusTotalAPIKey = strings.TrimSpace(os.Getenv("VIRUSTOTAL_API_KEY"))
 	}
 
 	return nil
