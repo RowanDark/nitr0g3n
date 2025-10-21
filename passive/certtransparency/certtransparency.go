@@ -90,6 +90,10 @@ func WithInitialBackoff(backoff time.Duration) Option {
 	}
 }
 
+func (c *Client) Name() string {
+	return "crt.sh"
+}
+
 func (c *Client) Enumerate(ctx context.Context, domain string) ([]string, error) {
 	domain = strings.TrimSpace(domain)
 	if domain == "" {

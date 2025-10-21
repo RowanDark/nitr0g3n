@@ -3,13 +3,18 @@ package main
 import (
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/yourusername/nitr0g3n/config"
 	"github.com/yourusername/nitr0g3n/output"
+	"github.com/yourusername/nitr0g3n/passive"
 	"github.com/yourusername/nitr0g3n/passive/certtransparency"
+	"github.com/yourusername/nitr0g3n/passive/hackertarget"
+	"github.com/yourusername/nitr0g3n/passive/threatcrowd"
+	"github.com/yourusername/nitr0g3n/passive/virustotal"
 )
 
 var cfg *config.Config
@@ -52,16 +57,32 @@ infrastructure quickly and accurately.`,
 		}
 
 		if cfg.Mode == config.ModePassive || cfg.Mode == config.ModeAll {
-			ctClient := certtransparency.NewClient()
-			subdomains, err := ctClient.Enumerate(cmd.Context(), cfg.Domain)
+			passiveSources, err := buildPassiveSources(cfg)
 			if err != nil {
-				return fmt.Errorf("certificate transparency lookup: %w", err)
+				return err
 			}
+
+			aggregation := passive.Aggregate(cmd.Context(), cfg.Domain, passiveSources)
+			if len(aggregation.Errors) > 0 {
+				for name, sourceErr := range aggregation.Errors {
+					cmd.PrintErrf("passive source %s error: %v\n", name, sourceErr)
+				}
+			}
+
+			if len(aggregation.Subdomains) == 0 {
+				return nil
+			}
+
+			subdomains := make([]string, 0, len(aggregation.Subdomains))
+			for subdomain := range aggregation.Subdomains {
+				subdomains = append(subdomains, subdomain)
+			}
+			sort.Strings(subdomains)
 
 			for _, subdomain := range subdomains {
 				record := output.Record{
 					Subdomain: subdomain,
-					Source:    "crt.sh",
+					Source:    strings.Join(aggregation.Subdomains[subdomain], ","),
 				}
 				if err := writer.WriteRecord(record); err != nil {
 					return fmt.Errorf("writing record: %w", err)
@@ -75,6 +96,62 @@ infrastructure quickly and accurately.`,
 
 func init() {
 	cfg = config.BindFlags(rootCmd)
+}
+
+func buildPassiveSources(cfg *config.Config) ([]passive.Source, error) {
+	ctClient := certtransparency.NewClient()
+	htClient := hackertarget.NewClient()
+	tcClient := threatcrowd.NewClient()
+	vtClient := virustotal.NewClient(cfg.VirusTotalAPIKey)
+
+	available := map[string]passive.Source{
+		"crtsh":            ctClient,
+		"crt.sh":           ctClient,
+		"certtransparency": ctClient,
+		"hackertarget":     htClient,
+		"threatcrowd":      tcClient,
+		"virustotal":       vtClient,
+		"vt":               vtClient,
+	}
+
+	defaultOrder := []string{"crtsh", "hackertarget", "threatcrowd", "virustotal"}
+
+	if len(cfg.Sources) == 0 {
+		return selectSources(defaultOrder, available)
+	}
+
+	return selectSources(cfg.Sources, available)
+}
+
+func selectSources(requested []string, available map[string]passive.Source) ([]passive.Source, error) {
+	selected := make([]passive.Source, 0, len(requested))
+	seen := make(map[string]struct{})
+
+	for _, name := range requested {
+		canonical := strings.ToLower(strings.TrimSpace(name))
+		if canonical == "" {
+			continue
+		}
+
+		source, ok := available[canonical]
+		if !ok {
+			return nil, fmt.Errorf("unknown passive source %q", name)
+		}
+
+		sourceName := source.Name()
+		if _, exists := seen[sourceName]; exists {
+			continue
+		}
+
+		selected = append(selected, source)
+		seen[sourceName] = struct{}{}
+	}
+
+	if len(selected) == 0 {
+		return nil, fmt.Errorf("no passive sources selected")
+	}
+
+	return selected, nil
 }
 
 func main() {
