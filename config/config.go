@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 )
@@ -33,6 +34,10 @@ type Config struct {
 	Verbose    bool
 	Format     Format
 	Sources    []string
+	Threads    int
+	DNSServer  string
+	DNSTimeout time.Duration
+	ShowAll    bool
 
 	VirusTotalAPIKey string
 }
@@ -49,6 +54,10 @@ func BindFlags(cmd *cobra.Command) *Config {
 	flags.BoolVarP(&cfg.Verbose, "verbose", "v", false, "Enable verbose logging output")
 	flags.StringVar((*string)(&cfg.Format), "format", string(FormatJSON), "Output format (json, csv, txt)")
 	flags.StringSliceVar(&cfg.Sources, "sources", nil, "Comma-separated list of passive sources to query")
+	flags.IntVar(&cfg.Threads, "threads", 50, "Number of concurrent DNS resolution workers")
+	flags.StringVar(&cfg.DNSServer, "dns-server", "", "Custom DNS server to use for resolution (host or host:port)")
+	flags.DurationVar(&cfg.DNSTimeout, "dns-timeout", 5*time.Second, "Timeout for individual DNS lookups")
+	flags.BoolVar(&cfg.ShowAll, "show-all", false, "Include subdomains without DNS records in the output")
 
 	return cfg
 }
@@ -95,6 +104,16 @@ func (c *Config) Validate() error {
 	}
 	if c.VirusTotalAPIKey == "" {
 		c.VirusTotalAPIKey = strings.TrimSpace(os.Getenv("VIRUSTOTAL_API_KEY"))
+	}
+
+	if c.Threads <= 0 {
+		c.Threads = 50
+	}
+
+	c.DNSServer = strings.TrimSpace(c.DNSServer)
+
+	if c.DNSTimeout <= 0 {
+		c.DNSTimeout = 5 * time.Second
 	}
 
 	return nil
