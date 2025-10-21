@@ -15,6 +15,7 @@ import (
 	"github.com/yourusername/nitr0g3n/passive/hackertarget"
 	"github.com/yourusername/nitr0g3n/passive/threatcrowd"
 	"github.com/yourusername/nitr0g3n/passive/virustotal"
+	"github.com/yourusername/nitr0g3n/resolver"
 )
 
 var cfg *config.Config
@@ -79,10 +80,32 @@ infrastructure quickly and accurately.`,
 			}
 			sort.Strings(subdomains)
 
+			resolveOpts := resolver.Options{
+				Server:  cfg.DNSServer,
+				Timeout: cfg.DNSTimeout,
+			}
+			dnsResolver, err := resolver.New(resolveOpts)
+			if err != nil {
+				return fmt.Errorf("configuring resolver: %w", err)
+			}
+
+			resolutions := dnsResolver.ResolveAll(cmd.Context(), subdomains, cfg.Threads)
+
 			for _, subdomain := range subdomains {
+				resolution := resolutions[subdomain]
+				if !cfg.ShowAll && len(resolution.IPAddresses) == 0 && len(resolution.DNSRecords) == 0 {
+					continue
+				}
+
+				if resolution.Err != nil {
+					cmd.PrintErrf("dns resolution %s error: %v\n", subdomain, resolution.Err)
+				}
+
 				record := output.Record{
-					Subdomain: subdomain,
-					Source:    strings.Join(aggregation.Subdomains[subdomain], ","),
+					Subdomain:   subdomain,
+					Source:      strings.Join(aggregation.Subdomains[subdomain], ","),
+					IPAddresses: resolution.IPAddresses,
+					DNSRecords:  resolution.DNSRecords,
 				}
 				if err := writer.WriteRecord(record); err != nil {
 					return fmt.Errorf("writing record: %w", err)
