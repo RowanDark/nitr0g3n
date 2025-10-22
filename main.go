@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/yourusername/nitr0g3n/active/bruteforce"
+	"github.com/yourusername/nitr0g3n/active/zonetransfer"
 	"github.com/yourusername/nitr0g3n/config"
 	"github.com/yourusername/nitr0g3n/output"
 	"github.com/yourusername/nitr0g3n/passive"
@@ -59,6 +60,7 @@ infrastructure quickly and accurately.`,
 		}
 
 		subdomainSources := make(map[string][]string)
+		zoneRecords := make(map[string]map[string][]string)
 
 		if cfg.Mode == config.ModePassive || cfg.Mode == config.ModeAll {
 			passiveSources, err := buildPassiveSources(cfg)
@@ -81,6 +83,26 @@ infrastructure quickly and accurately.`,
 		}
 
 		if cfg.Mode == config.ModeActive || cfg.Mode == config.ModeAll {
+			ztOpts := zonetransfer.Options{
+				Domain:    cfg.Domain,
+				DNSServer: cfg.DNSServer,
+				Timeout:   cfg.DNSTimeout,
+				Verbose:   cfg.Verbose,
+				LogWriter: cmd.ErrOrStderr(),
+			}
+
+			transfers, err := zonetransfer.Run(cmd.Context(), ztOpts)
+			if err != nil {
+				return fmt.Errorf("active zone transfer: %w", err)
+			}
+
+			for _, transfer := range transfers {
+				for hostname := range transfer.Records {
+					addSource(subdomainSources, hostname, "active:zonetransfer")
+				}
+				mergeZoneRecords(zoneRecords, transfer.Records)
+			}
+
 			opts := bruteforce.Options{
 				Domain:         cfg.Domain,
 				WordlistPath:   cfg.WordlistPath,
@@ -124,7 +146,8 @@ infrastructure quickly and accurately.`,
 
 		for _, subdomain := range subdomains {
 			resolution := resolutions[subdomain]
-			if !cfg.ShowAll && len(resolution.IPAddresses) == 0 && len(resolution.DNSRecords) == 0 {
+			mergedIPs, mergedRecords := mergeResolution(resolution, zoneRecords[subdomain])
+			if !cfg.ShowAll && len(mergedIPs) == 0 && len(mergedRecords) == 0 {
 				continue
 			}
 
@@ -135,8 +158,8 @@ infrastructure quickly and accurately.`,
 			record := output.Record{
 				Subdomain:   subdomain,
 				Source:      strings.Join(subdomainSources[subdomain], ","),
-				IPAddresses: resolution.IPAddresses,
-				DNSRecords:  resolution.DNSRecords,
+				IPAddresses: mergedIPs,
+				DNSRecords:  mergedRecords,
 			}
 			if err := writer.WriteRecord(record); err != nil {
 				return fmt.Errorf("writing record: %w", err)
@@ -222,6 +245,92 @@ func addSource(m map[string][]string, subdomain, source string) {
 	existing = append(existing, source)
 	sort.Strings(existing)
 	m[subdomain] = existing
+}
+
+func mergeZoneRecords(target map[string]map[string][]string, incoming map[string]map[string][]string) {
+	if len(incoming) == 0 {
+		return
+	}
+
+	for hostname, records := range incoming {
+		hostname = strings.TrimSpace(hostname)
+		if hostname == "" {
+			continue
+		}
+
+		existing := target[hostname]
+		if existing == nil {
+			existing = make(map[string][]string)
+		}
+
+		for recordType, values := range records {
+			if len(values) == 0 {
+				continue
+			}
+			merged := append(existing[recordType], values...)
+			existing[recordType] = dedupeSortedStrings(merged)
+		}
+
+		target[hostname] = existing
+	}
+}
+
+func mergeResolution(res resolver.Result, zone map[string][]string) ([]string, map[string][]string) {
+	ipAddresses := append([]string(nil), res.IPAddresses...)
+
+	var dnsRecords map[string][]string
+	if len(res.DNSRecords) > 0 {
+		dnsRecords = make(map[string][]string, len(res.DNSRecords))
+		for recordType, values := range res.DNSRecords {
+			dnsRecords[recordType] = append([]string(nil), values...)
+		}
+	}
+
+	if len(zone) > 0 {
+		if dnsRecords == nil {
+			dnsRecords = make(map[string][]string)
+		}
+		for recordType, values := range zone {
+			if len(values) == 0 {
+				continue
+			}
+			dnsRecords[recordType] = dedupeSortedStrings(append(dnsRecords[recordType], values...))
+			if recordType == "A" || recordType == "AAAA" {
+				ipAddresses = append(ipAddresses, values...)
+			}
+		}
+	}
+
+	ipAddresses = dedupeSortedStrings(ipAddresses)
+	if len(dnsRecords) == 0 {
+		dnsRecords = nil
+	}
+
+	return ipAddresses, dnsRecords
+}
+
+func dedupeSortedStrings(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	sort.Strings(result)
+	return result
 }
 
 func main() {
