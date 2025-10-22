@@ -17,11 +17,19 @@ import (
 
 // Record captures the structured discovery data shared with downstream tooling.
 type Record struct {
-	Subdomain   string              `json:"subdomain"`
-	IPAddresses []string            `json:"ip_addresses"`
-	Source      string              `json:"source"`
-	Timestamp   string              `json:"timestamp"`
-	DNSRecords  map[string][]string `json:"dns_records"`
+	Subdomain    string              `json:"subdomain"`
+	IPAddresses  []string            `json:"ip_addresses"`
+	Source       string              `json:"source"`
+	Timestamp    string              `json:"timestamp"`
+	DNSRecords   map[string][]string `json:"dns_records"`
+	HTTPServices []HTTPService       `json:"http,omitempty"`
+}
+
+// HTTPService captures the result of probing a single scheme/URL.
+type HTTPService struct {
+	URL        string `json:"url"`
+	StatusCode int    `json:"status_code"`
+	Error      string `json:"error,omitempty"`
 }
 
 // Writer serialises discovery records to stdout or a file in a configured format.
@@ -109,7 +117,7 @@ func (w *Writer) writeCSVRecord(record Record) error {
 	}
 
 	if !w.csvHeaderSent {
-		header := []string{"subdomain", "ip_addresses", "source", "timestamp", "dns_records"}
+		header := []string{"subdomain", "ip_addresses", "source", "timestamp", "dns_records", "http_services"}
 		if err := w.csvWriter.Write(header); err != nil {
 			return err
 		}
@@ -123,6 +131,7 @@ func (w *Writer) writeCSVRecord(record Record) error {
 		record.Source,
 		record.Timestamp,
 		dns,
+		flattenHTTPServices(record.HTTPServices),
 	}
 
 	if err := w.csvWriter.Write(row); err != nil {
@@ -158,6 +167,17 @@ func (w *Writer) writeTXTRecord(record Record) error {
 		}
 	}
 
+	if len(record.HTTPServices) > 0 {
+		builder.WriteString("HTTP Services:\n")
+		for _, svc := range record.HTTPServices {
+			if svc.Error != "" {
+				builder.WriteString(fmt.Sprintf("  %s -> error: %s\n", svc.URL, svc.Error))
+				continue
+			}
+			builder.WriteString(fmt.Sprintf("  %s -> %d\n", svc.URL, svc.StatusCode))
+		}
+	}
+
 	builder.WriteString("\n")
 
 	if _, err := fmt.Fprint(w.destination, builder.String()); err != nil {
@@ -188,6 +208,23 @@ func flattenDNSRecords(records map[string][]string) string {
 			continue
 		}
 		parts = append(parts, fmt.Sprintf("%s=%s", key, strings.Join(records[key], ";")))
+	}
+
+	return strings.Join(parts, "|")
+}
+
+func flattenHTTPServices(services []HTTPService) string {
+	if len(services) == 0 {
+		return ""
+	}
+
+	parts := make([]string, 0, len(services))
+	for _, service := range services {
+		if service.Error != "" {
+			parts = append(parts, fmt.Sprintf("%s:error=%s", service.URL, service.Error))
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s:%d", service.URL, service.StatusCode))
 	}
 
 	return strings.Join(parts, "|")

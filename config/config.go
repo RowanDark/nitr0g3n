@@ -42,6 +42,10 @@ type Config struct {
 	Permutations bool
 
 	VirusTotalAPIKey string
+	FilterWildcards  bool
+	Scope            []string
+	UniqueIPs        bool
+	ProbeHTTP        bool
 }
 
 // BindFlags registers the shared command-line flags and returns a Config
@@ -62,6 +66,10 @@ func BindFlags(cmd *cobra.Command) *Config {
 	flags.BoolVar(&cfg.ShowAll, "show-all", false, "Include subdomains without DNS records in the output")
 	flags.StringVar(&cfg.WordlistPath, "wordlist", "", "Path to a custom wordlist for active bruteforce enumeration")
 	flags.BoolVar(&cfg.Permutations, "permutations", true, "Enable wordlist permutations when bruteforcing")
+	flags.BoolVar(&cfg.FilterWildcards, "filter-wildcards", true, "Filter wildcard DNS and generic CDN responses")
+	flags.StringSliceVar(&cfg.Scope, "scope", nil, "Restrict output to subdomains matching the provided glob patterns or TLD suffixes")
+	flags.BoolVar(&cfg.UniqueIPs, "unique-ips", false, "Only output subdomains that resolve to new unique IP addresses")
+	flags.BoolVar(&cfg.ProbeHTTP, "probe", false, "Probe discovered subdomains over HTTP and HTTPS to capture status codes")
 
 	return cfg
 }
@@ -101,6 +109,18 @@ func (c *Config) Validate() error {
 			normalised = append(normalised, source)
 		}
 		c.Sources = normalised
+	}
+
+	if len(c.Scope) > 0 {
+		filtered := make([]string, 0, len(c.Scope))
+		for _, pattern := range c.Scope {
+			pattern = strings.TrimSpace(pattern)
+			if pattern == "" {
+				continue
+			}
+			filtered = append(filtered, pattern)
+		}
+		c.Scope = filtered
 	}
 
 	if c.VirusTotalAPIKey == "" {

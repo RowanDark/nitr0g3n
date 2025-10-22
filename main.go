@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path"
 	"sort"
 	"strings"
 
@@ -11,12 +12,14 @@ import (
 	"github.com/yourusername/nitr0g3n/active/bruteforce"
 	"github.com/yourusername/nitr0g3n/active/zonetransfer"
 	"github.com/yourusername/nitr0g3n/config"
+	"github.com/yourusername/nitr0g3n/filters"
 	"github.com/yourusername/nitr0g3n/output"
 	"github.com/yourusername/nitr0g3n/passive"
 	"github.com/yourusername/nitr0g3n/passive/certtransparency"
 	"github.com/yourusername/nitr0g3n/passive/hackertarget"
 	"github.com/yourusername/nitr0g3n/passive/threatcrowd"
 	"github.com/yourusername/nitr0g3n/passive/virustotal"
+	"github.com/yourusername/nitr0g3n/probe"
 	"github.com/yourusername/nitr0g3n/resolver"
 )
 
@@ -144,8 +147,37 @@ infrastructure quickly and accurately.`,
 
 		resolutions := dnsResolver.ResolveAll(cmd.Context(), subdomains, cfg.Threads)
 
+		var wildcardProfile filters.WildcardProfile
+		if cfg.FilterWildcards {
+			profile, err := filters.DetectWildcard(cmd.Context(), dnsResolver, cfg.Domain, 3)
+			if err != nil {
+				cmd.PrintErrf("wildcard detection error: %v\n", err)
+			} else {
+				wildcardProfile = profile
+				if cfg.Verbose && wildcardProfile.Active() {
+					cmd.Println("Wildcard DNS detected; filtering matching results")
+				}
+			}
+		}
+
+		var httpClient *probe.Client
+		if cfg.ProbeHTTP {
+			httpClient = probe.NewClient(probe.Options{Timeout: cfg.DNSTimeout})
+		}
+
+		seenIPs := make(map[string]struct{})
+		if !cfg.UniqueIPs {
+			seenIPs = nil
+		}
+
 		for _, subdomain := range subdomains {
 			resolution := resolutions[subdomain]
+			if cfg.FilterWildcards && wildcardProfile.Active() && wildcardProfile.Matches(resolution) {
+				if cfg.Verbose {
+					cmd.Printf("Skipping wildcard subdomain: %s\n", subdomain)
+				}
+				continue
+			}
 			mergedIPs, mergedRecords := mergeResolution(resolution, zoneRecords[subdomain])
 			if !cfg.ShowAll && len(mergedIPs) == 0 && len(mergedRecords) == 0 {
 				continue
@@ -155,11 +187,32 @@ infrastructure quickly and accurately.`,
 				cmd.PrintErrf("dns resolution %s error: %v\n", subdomain, resolution.Err)
 			}
 
+			if cfg.FilterWildcards && filters.IsCDNResponse(mergedRecords) {
+				if cfg.Verbose {
+					cmd.Printf("Skipping CDN-derived subdomain: %s\n", subdomain)
+				}
+				continue
+			}
+
+			if len(cfg.Scope) > 0 && !matchesScope(subdomain, cfg.Scope) {
+				continue
+			}
+
+			if cfg.UniqueIPs {
+				mergedIPs, mergedRecords = filterUniqueIPs(mergedIPs, mergedRecords, seenIPs)
+				if len(mergedIPs) == 0 {
+					continue
+				}
+			}
+
 			record := output.Record{
 				Subdomain:   subdomain,
 				Source:      strings.Join(subdomainSources[subdomain], ","),
 				IPAddresses: mergedIPs,
 				DNSRecords:  mergedRecords,
+			}
+			if cfg.ProbeHTTP && httpClient != nil {
+				record.HTTPServices = httpClient.Probe(cmd.Context(), subdomain)
 			}
 			if err := writer.WriteRecord(record); err != nil {
 				return fmt.Errorf("writing record: %w", err)
@@ -331,6 +384,104 @@ func dedupeSortedStrings(values []string) []string {
 	}
 	sort.Strings(result)
 	return result
+}
+
+func matchesScope(subdomain string, patterns []string) bool {
+	if len(patterns) == 0 {
+		return true
+	}
+
+	candidate := strings.ToLower(strings.TrimSpace(subdomain))
+	if candidate == "" {
+		return false
+	}
+
+	for _, pattern := range patterns {
+		pattern = strings.ToLower(strings.TrimSpace(pattern))
+		if pattern == "" {
+			continue
+		}
+
+		if strings.ContainsAny(pattern, "*?[]") {
+			if ok, err := path.Match(pattern, candidate); err == nil && ok {
+				return true
+			}
+			continue
+		}
+
+		if strings.HasPrefix(pattern, ".") {
+			if strings.HasSuffix(candidate, pattern) {
+				return true
+			}
+			continue
+		}
+
+		if strings.Contains(candidate, pattern) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func filterUniqueIPs(ips []string, records map[string][]string, seen map[string]struct{}) ([]string, map[string][]string) {
+	if len(ips) == 0 || seen == nil {
+		return ips, records
+	}
+
+	filtered := make([]string, 0, len(ips))
+	for _, ip := range ips {
+		ip = strings.TrimSpace(ip)
+		if ip == "" {
+			continue
+		}
+		if _, exists := seen[ip]; exists {
+			continue
+		}
+		seen[ip] = struct{}{}
+		filtered = append(filtered, ip)
+	}
+
+	if len(filtered) == 0 {
+		return nil, records
+	}
+
+	if records == nil {
+		return filtered, records
+	}
+
+	allowed := make(map[string]struct{}, len(filtered))
+	for _, ip := range filtered {
+		allowed[ip] = struct{}{}
+	}
+
+	for _, recordType := range []string{"A", "AAAA"} {
+		values, ok := records[recordType]
+		if !ok {
+			continue
+		}
+		updated := make([]string, 0, len(values))
+		for _, value := range values {
+			value = strings.TrimSpace(value)
+			if value == "" {
+				continue
+			}
+			if _, ok := allowed[value]; ok {
+				updated = append(updated, value)
+			}
+		}
+		if len(updated) == 0 {
+			delete(records, recordType)
+		} else {
+			records[recordType] = updated
+		}
+	}
+
+	if len(records) == 0 {
+		records = nil
+	}
+
+	return filtered, records
 }
 
 func main() {
