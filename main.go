@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/yourusername/nitr0g3n/active/bruteforce"
 	"github.com/yourusername/nitr0g3n/config"
 	"github.com/yourusername/nitr0g3n/output"
 	"github.com/yourusername/nitr0g3n/passive"
@@ -57,6 +58,8 @@ infrastructure quickly and accurately.`,
 			return nil
 		}
 
+		subdomainSources := make(map[string][]string)
+
 		if cfg.Mode == config.ModePassive || cfg.Mode == config.ModeAll {
 			passiveSources, err := buildPassiveSources(cfg)
 			if err != nil {
@@ -70,46 +73,73 @@ infrastructure quickly and accurately.`,
 				}
 			}
 
-			if len(aggregation.Subdomains) == 0 {
-				return nil
+			for subdomain, sources := range aggregation.Subdomains {
+				for _, source := range sources {
+					addSource(subdomainSources, subdomain, source)
+				}
+			}
+		}
+
+		if cfg.Mode == config.ModeActive || cfg.Mode == config.ModeAll {
+			opts := bruteforce.Options{
+				Domain:         cfg.Domain,
+				WordlistPath:   cfg.WordlistPath,
+				Permutations:   cfg.Permutations,
+				DNSServer:      cfg.DNSServer,
+				Timeout:        cfg.DNSTimeout,
+				Workers:        cfg.Threads,
+				ProgressWriter: cmd.ErrOrStderr(),
 			}
 
-			subdomains := make([]string, 0, len(aggregation.Subdomains))
-			for subdomain := range aggregation.Subdomains {
-				subdomains = append(subdomains, subdomain)
-			}
-			sort.Strings(subdomains)
-
-			resolveOpts := resolver.Options{
-				Server:  cfg.DNSServer,
-				Timeout: cfg.DNSTimeout,
-			}
-			dnsResolver, err := resolver.New(resolveOpts)
+			results, err := bruteforce.Run(cmd.Context(), opts)
 			if err != nil {
-				return fmt.Errorf("configuring resolver: %w", err)
+				return fmt.Errorf("active bruteforce: %w", err)
 			}
 
-			resolutions := dnsResolver.ResolveAll(cmd.Context(), subdomains, cfg.Threads)
+			for _, res := range results {
+				addSource(subdomainSources, res.Subdomain, "active:bruteforce")
+			}
+		}
 
-			for _, subdomain := range subdomains {
-				resolution := resolutions[subdomain]
-				if !cfg.ShowAll && len(resolution.IPAddresses) == 0 && len(resolution.DNSRecords) == 0 {
-					continue
-				}
+		if len(subdomainSources) == 0 {
+			return nil
+		}
 
-				if resolution.Err != nil {
-					cmd.PrintErrf("dns resolution %s error: %v\n", subdomain, resolution.Err)
-				}
+		subdomains := make([]string, 0, len(subdomainSources))
+		for subdomain := range subdomainSources {
+			subdomains = append(subdomains, subdomain)
+		}
+		sort.Strings(subdomains)
 
-				record := output.Record{
-					Subdomain:   subdomain,
-					Source:      strings.Join(aggregation.Subdomains[subdomain], ","),
-					IPAddresses: resolution.IPAddresses,
-					DNSRecords:  resolution.DNSRecords,
-				}
-				if err := writer.WriteRecord(record); err != nil {
-					return fmt.Errorf("writing record: %w", err)
-				}
+		resolveOpts := resolver.Options{
+			Server:  cfg.DNSServer,
+			Timeout: cfg.DNSTimeout,
+		}
+		dnsResolver, err := resolver.New(resolveOpts)
+		if err != nil {
+			return fmt.Errorf("configuring resolver: %w", err)
+		}
+
+		resolutions := dnsResolver.ResolveAll(cmd.Context(), subdomains, cfg.Threads)
+
+		for _, subdomain := range subdomains {
+			resolution := resolutions[subdomain]
+			if !cfg.ShowAll && len(resolution.IPAddresses) == 0 && len(resolution.DNSRecords) == 0 {
+				continue
+			}
+
+			if resolution.Err != nil {
+				cmd.PrintErrf("dns resolution %s error: %v\n", subdomain, resolution.Err)
+			}
+
+			record := output.Record{
+				Subdomain:   subdomain,
+				Source:      strings.Join(subdomainSources[subdomain], ","),
+				IPAddresses: resolution.IPAddresses,
+				DNSRecords:  resolution.DNSRecords,
+			}
+			if err := writer.WriteRecord(record); err != nil {
+				return fmt.Errorf("writing record: %w", err)
 			}
 		}
 
@@ -175,6 +205,23 @@ func selectSources(requested []string, available map[string]passive.Source) ([]p
 	}
 
 	return selected, nil
+}
+
+func addSource(m map[string][]string, subdomain, source string) {
+	if strings.TrimSpace(subdomain) == "" || strings.TrimSpace(source) == "" {
+		return
+	}
+
+	existing := m[subdomain]
+	for _, item := range existing {
+		if item == source {
+			return
+		}
+	}
+
+	existing = append(existing, source)
+	sort.Strings(existing)
+	m[subdomain] = existing
 }
 
 func main() {

@@ -28,16 +28,18 @@ const (
 
 // Config captures all runtime configuration for the CLI.
 type Config struct {
-	Domain     string
-	Mode       string
-	OutputPath string
-	Verbose    bool
-	Format     Format
-	Sources    []string
-	Threads    int
-	DNSServer  string
-	DNSTimeout time.Duration
-	ShowAll    bool
+	Domain       string
+	Mode         string
+	OutputPath   string
+	Verbose      bool
+	Format       Format
+	Sources      []string
+	Threads      int
+	DNSServer    string
+	DNSTimeout   time.Duration
+	ShowAll      bool
+	WordlistPath string
+	Permutations bool
 
 	VirusTotalAPIKey string
 }
@@ -58,6 +60,8 @@ func BindFlags(cmd *cobra.Command) *Config {
 	flags.StringVar(&cfg.DNSServer, "dns-server", "", "Custom DNS server to use for resolution (host or host:port)")
 	flags.DurationVar(&cfg.DNSTimeout, "dns-timeout", 5*time.Second, "Timeout for individual DNS lookups")
 	flags.BoolVar(&cfg.ShowAll, "show-all", false, "Include subdomains without DNS records in the output")
+	flags.StringVar(&cfg.WordlistPath, "wordlist", "", "Path to a custom wordlist for active bruteforce enumeration")
+	flags.BoolVar(&cfg.Permutations, "permutations", true, "Enable wordlist permutations when bruteforcing")
 
 	return cfg
 }
@@ -111,6 +115,7 @@ func (c *Config) Validate() error {
 	}
 
 	c.DNSServer = strings.TrimSpace(c.DNSServer)
+	c.WordlistPath = strings.TrimSpace(c.WordlistPath)
 
 	if c.DNSTimeout <= 0 {
 		c.DNSTimeout = 5 * time.Second
