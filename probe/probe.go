@@ -10,7 +10,8 @@ import (
 )
 
 type Options struct {
-	Timeout time.Duration
+	Timeout    time.Duration
+	HTTPClient *http.Client
 }
 
 func NewClient(opts Options) *Client {
@@ -18,9 +19,15 @@ func NewClient(opts Options) *Client {
 	if timeout <= 0 {
 		timeout = 10 * time.Second
 	}
-	return &Client{
-		http: &http.Client{Timeout: timeout},
+
+	client := opts.HTTPClient
+	if client == nil {
+		client = &http.Client{Timeout: timeout}
 	}
+
+	client.Timeout = timeout
+
+	return &Client{http: client}
 }
 
 type Client struct {

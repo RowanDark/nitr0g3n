@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+
+	"github.com/yourusername/nitr0g3n/ratelimit"
 )
 
 type Options struct {
@@ -25,6 +27,7 @@ type Options struct {
 	Timeout        time.Duration
 	Workers        int
 	ProgressWriter io.Writer
+	RateLimiter    *ratelimit.Limiter
 }
 
 type Result struct {
@@ -95,6 +98,12 @@ func Run(ctx context.Context, opts Options) ([]Result, error) {
 		for j := range jobs {
 			if ctx.Err() != nil {
 				return
+			}
+
+			if opts.RateLimiter != nil {
+				if err := opts.RateLimiter.Acquire(ctx); err != nil {
+					return
+				}
 			}
 
 			res, ok := queryHostname(ctx, client, server, j.hostname)

@@ -1,11 +1,16 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"net/http"
 	"os"
+	"os/signal"
 	"path"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -15,6 +20,7 @@ import (
 	"github.com/yourusername/nitr0g3n/config"
 	"github.com/yourusername/nitr0g3n/exporter/oxg3n"
 	"github.com/yourusername/nitr0g3n/filters"
+	"github.com/yourusername/nitr0g3n/netutil"
 	"github.com/yourusername/nitr0g3n/output"
 	"github.com/yourusername/nitr0g3n/passive"
 	"github.com/yourusername/nitr0g3n/passive/certtransparency"
@@ -22,6 +28,7 @@ import (
 	"github.com/yourusername/nitr0g3n/passive/threatcrowd"
 	"github.com/yourusername/nitr0g3n/passive/virustotal"
 	"github.com/yourusername/nitr0g3n/probe"
+	"github.com/yourusername/nitr0g3n/ratelimit"
 	"github.com/yourusername/nitr0g3n/resolver"
 )
 
@@ -35,9 +42,15 @@ var rootCmd = &cobra.Command{
 It provides active and passive discovery workflows to help analysts profile
 infrastructure quickly and accurately.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+
 		if err := cfg.Validate(); err != nil {
 			return err
 		}
+
+		limiter := ratelimit.New(cfg.RateLimit)
+		httpClient := netutil.NewHTTPClient(cfg.Timeout, limiter)
 
 		writer, err := output.NewWriter(cfg)
 		if err != nil {
@@ -49,6 +62,7 @@ infrastructure quickly and accurately.`,
 			Endpoint:  cfg.Export0xGenEndpoint,
 			APIKey:    cfg.APIKey,
 			Domain:    cfg.Domain,
+			Client:    httpClient,
 			BatchSize: 100,
 			Logger:    cmd.ErrOrStderr(),
 		})
@@ -79,12 +93,12 @@ infrastructure quickly and accurately.`,
 		zoneRecords := make(map[string]map[string][]string)
 
 		if cfg.Mode == config.ModePassive || cfg.Mode == config.ModeAll {
-			passiveSources, err := buildPassiveSources(cfg)
+			passiveSources, err := buildPassiveSources(cfg, httpClient)
 			if err != nil {
 				return err
 			}
 
-			aggregation := passive.Aggregate(cmd.Context(), cfg.Domain, passiveSources)
+			aggregation := passive.Aggregate(ctx, cfg.Domain, passiveSources)
 			if len(aggregation.Errors) > 0 {
 				for name, sourceErr := range aggregation.Errors {
 					cmd.PrintErrf("passive source %s error: %v\n", name, sourceErr)
@@ -100,14 +114,15 @@ infrastructure quickly and accurately.`,
 
 		if cfg.Mode == config.ModeActive || cfg.Mode == config.ModeAll {
 			ztOpts := zonetransfer.Options{
-				Domain:    cfg.Domain,
-				DNSServer: cfg.DNSServer,
-				Timeout:   cfg.DNSTimeout,
-				Verbose:   cfg.Verbose,
-				LogWriter: cmd.ErrOrStderr(),
+				Domain:      cfg.Domain,
+				DNSServer:   cfg.DNSServer,
+				Timeout:     cfg.Timeout,
+				Verbose:     cfg.Verbose,
+				LogWriter:   cmd.ErrOrStderr(),
+				RateLimiter: limiter,
 			}
 
-			transfers, err := zonetransfer.Run(cmd.Context(), ztOpts)
+			transfers, err := zonetransfer.Run(ctx, ztOpts)
 			if err != nil {
 				return fmt.Errorf("active zone transfer: %w", err)
 			}
@@ -127,9 +142,10 @@ infrastructure quickly and accurately.`,
 				Timeout:        cfg.DNSTimeout,
 				Workers:        cfg.Threads,
 				ProgressWriter: cmd.ErrOrStderr(),
+				RateLimiter:    limiter,
 			}
 
-			results, err := bruteforce.Run(cmd.Context(), opts)
+			results, err := bruteforce.Run(ctx, opts)
 			if err != nil {
 				return fmt.Errorf("active bruteforce: %w", err)
 			}
@@ -150,19 +166,20 @@ infrastructure quickly and accurately.`,
 		sort.Strings(subdomains)
 
 		resolveOpts := resolver.Options{
-			Server:  cfg.DNSServer,
-			Timeout: cfg.DNSTimeout,
+			Server:      cfg.DNSServer,
+			Timeout:     cfg.DNSTimeout,
+			RateLimiter: limiter,
 		}
 		dnsResolver, err := resolver.New(resolveOpts)
 		if err != nil {
 			return fmt.Errorf("configuring resolver: %w", err)
 		}
 
-		resolutions := dnsResolver.ResolveAll(cmd.Context(), subdomains, cfg.Threads)
+		resultsCh := dnsResolver.ResolveAll(ctx, subdomains, cfg.Threads)
 
 		var wildcardProfile filters.WildcardProfile
 		if cfg.FilterWildcards {
-			profile, err := filters.DetectWildcard(cmd.Context(), dnsResolver, cfg.Domain, 3)
+			profile, err := filters.DetectWildcard(ctx, dnsResolver, cfg.Domain, 3)
 			if err != nil {
 				cmd.PrintErrf("wildcard detection error: %v\n", err)
 			} else {
@@ -173,9 +190,9 @@ infrastructure quickly and accurately.`,
 			}
 		}
 
-		var httpClient *probe.Client
+		var probeClient *probe.Client
 		if cfg.ProbeHTTP {
-			httpClient = probe.NewClient(probe.Options{Timeout: cfg.DNSTimeout})
+			probeClient = probe.NewClient(probe.Options{Timeout: cfg.Timeout, HTTPClient: netutil.NewHTTPClient(cfg.Timeout, limiter)})
 		}
 
 		seenIPs := make(map[string]struct{})
@@ -183,16 +200,23 @@ infrastructure quickly and accurately.`,
 			seenIPs = nil
 		}
 
-		for _, subdomain := range subdomains {
-			resolution := resolutions[subdomain]
+		for resolution := range resultsCh {
+			subdomain := resolution.Subdomain
+			if subdomain == "" {
+				continue
+			}
+
 			if cfg.FilterWildcards && wildcardProfile.Active() && wildcardProfile.Matches(resolution) {
 				if cfg.Verbose {
 					cmd.Printf("Skipping wildcard subdomain: %s\n", subdomain)
 				}
 				continue
 			}
+
 			mergedIPs, mergedRecords := mergeResolution(resolution, zoneRecords[subdomain])
 			if !cfg.ShowAll && len(mergedIPs) == 0 && len(mergedRecords) == 0 {
+				delete(subdomainSources, subdomain)
+				delete(zoneRecords, subdomain)
 				continue
 			}
 
@@ -204,16 +228,22 @@ infrastructure quickly and accurately.`,
 				if cfg.Verbose {
 					cmd.Printf("Skipping CDN-derived subdomain: %s\n", subdomain)
 				}
+				delete(subdomainSources, subdomain)
+				delete(zoneRecords, subdomain)
 				continue
 			}
 
 			if len(cfg.Scope) > 0 && !matchesScope(subdomain, cfg.Scope) {
+				delete(subdomainSources, subdomain)
+				delete(zoneRecords, subdomain)
 				continue
 			}
 
 			if cfg.UniqueIPs {
 				mergedIPs, mergedRecords = filterUniqueIPs(mergedIPs, mergedRecords, seenIPs)
 				if len(mergedIPs) == 0 {
+					delete(subdomainSources, subdomain)
+					delete(zoneRecords, subdomain)
 					continue
 				}
 			}
@@ -224,8 +254,8 @@ infrastructure quickly and accurately.`,
 				IPAddresses: mergedIPs,
 				DNSRecords:  mergedRecords,
 			}
-			if cfg.ProbeHTTP && httpClient != nil {
-				record.HTTPServices = httpClient.Probe(cmd.Context(), subdomain)
+			if cfg.ProbeHTTP && probeClient != nil {
+				record.HTTPServices = probeClient.Probe(ctx, subdomain)
 			}
 			if record.Timestamp == "" {
 				record.Timestamp = time.Now().UTC().Format(time.RFC3339)
@@ -236,14 +266,20 @@ infrastructure quickly and accurately.`,
 			}
 
 			if exporter != nil {
-				if err := exporter.AddRecord(cmd.Context(), record); err != nil {
+				if err := exporter.AddRecord(ctx, record); err != nil {
 					return fmt.Errorf("exporting to 0xg3n: %w", err)
 				}
 			}
+
+			delete(subdomainSources, subdomain)
+			delete(zoneRecords, subdomain)
 		}
 
 		if exporter != nil {
-			summary, err := exporter.Flush(cmd.Context())
+			flushCtx, cancel := context.WithTimeout(context.Background(), cfg.Timeout)
+			defer cancel()
+
+			summary, err := exporter.Flush(flushCtx)
 			if err != nil {
 				return fmt.Errorf("finalising 0xg3n export: %w", err)
 			}
@@ -254,6 +290,10 @@ infrastructure quickly and accurately.`,
 			}
 		}
 
+		if err := ctx.Err(); err != nil && !errors.Is(err, context.Canceled) {
+			return err
+		}
+
 		return nil
 	},
 }
@@ -262,11 +302,23 @@ func init() {
 	cfg = config.BindFlags(rootCmd)
 }
 
-func buildPassiveSources(cfg *config.Config) ([]passive.Source, error) {
-	ctClient := certtransparency.NewClient()
-	htClient := hackertarget.NewClient()
-	tcClient := threatcrowd.NewClient()
-	vtClient := virustotal.NewClient(cfg.VirusTotalAPIKey)
+func buildPassiveSources(cfg *config.Config, httpClient *http.Client) ([]passive.Source, error) {
+	ctClient := certtransparency.NewClient(
+		certtransparency.WithHTTPClient(httpClient),
+		certtransparency.WithTimeout(cfg.Timeout),
+	)
+	htClient := hackertarget.NewClient(
+		hackertarget.WithHTTPClient(httpClient),
+		hackertarget.WithTimeout(cfg.Timeout),
+	)
+	tcClient := threatcrowd.NewClient(
+		threatcrowd.WithHTTPClient(httpClient),
+		threatcrowd.WithTimeout(cfg.Timeout),
+	)
+	vtClient := virustotal.NewClient(cfg.VirusTotalAPIKey,
+		virustotal.WithHTTPClient(httpClient),
+		virustotal.WithTimeout(cfg.Timeout),
+	)
 
 	available := map[string]passive.Source{
 		"crtsh":            ctClient,
