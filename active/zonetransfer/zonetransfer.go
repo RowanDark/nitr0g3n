@@ -11,14 +11,17 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+
+	"github.com/yourusername/nitr0g3n/ratelimit"
 )
 
 type Options struct {
-	Domain    string
-	DNSServer string
-	Timeout   time.Duration
-	Verbose   bool
-	LogWriter io.Writer
+	Domain      string
+	DNSServer   string
+	Timeout     time.Duration
+	Verbose     bool
+	LogWriter   io.Writer
+	RateLimiter *ratelimit.Limiter
 }
 
 type Result struct {
@@ -48,6 +51,12 @@ func Run(ctx context.Context, opts Options) ([]Result, error) {
 
 	client := &dns.Client{Timeout: timeout}
 
+	if opts.RateLimiter != nil {
+		if err := opts.RateLimiter.Acquire(ctx); err != nil {
+			return nil, err
+		}
+	}
+
 	nsRecords, err := lookupNS(ctx, client, server, domain)
 	if err != nil {
 		return nil, err
@@ -68,6 +77,12 @@ func Run(ctx context.Context, opts Options) ([]Result, error) {
 		case <-ctx.Done():
 			return results, ctx.Err()
 		default:
+		}
+
+		if opts.RateLimiter != nil {
+			if err := opts.RateLimiter.Acquire(ctx); err != nil {
+				return results, err
+			}
 		}
 
 		addr, err := resolverAddress(ns)

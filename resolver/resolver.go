@@ -10,17 +10,22 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/yourusername/nitr0g3n/ratelimit"
 )
 
 type Options struct {
-	Server  string
-	Timeout time.Duration
+	Server      string
+	Timeout     time.Duration
+	RateLimiter *ratelimit.Limiter
 }
 
 type Resolver struct {
 	resolver *net.Resolver
 	timeout  time.Duration
 	server   string
+	limiter  *ratelimit.Limiter
+	dialer   *pooledDialer
 }
 
 type Result struct {
@@ -31,7 +36,7 @@ type Result struct {
 }
 
 func New(options Options) (*Resolver, error) {
-	r := &Resolver{timeout: options.Timeout}
+	r := &Resolver{timeout: options.Timeout, limiter: options.RateLimiter}
 	if r.timeout <= 0 {
 		r.timeout = 5 * time.Second
 	}
@@ -46,8 +51,8 @@ func New(options Options) (*Resolver, error) {
 		addr = net.JoinHostPort(strings.TrimSpace(addr), "53")
 	}
 
-	dialer := &net.Dialer{}
 	r.server = addr
+	r.dialer = newPooledDialer(addr, r.timeout)
 	r.resolver = &net.Resolver{
 		PreferGo: true,
 		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
@@ -56,7 +61,7 @@ func New(options Options) (*Resolver, error) {
 			if r.timeout > 0 {
 				dctx, cancel = context.WithTimeout(ctx, r.timeout)
 			}
-			conn, err := dialer.DialContext(dctx, network, addr)
+			conn, err := r.dialer.dialContext(dctx, network)
 			if cancel != nil {
 				cancel()
 			}
@@ -138,59 +143,75 @@ func (r *Resolver) Resolve(ctx context.Context, hostname string) Result {
 	return result
 }
 
-func (r *Resolver) ResolveAll(ctx context.Context, hostnames []string, workers int) map[string]Result {
-	results := make(map[string]Result, len(hostnames))
+func (r *Resolver) ResolveAll(ctx context.Context, hostnames []string, workers int) <-chan Result {
+	output := make(chan Result)
 	if len(hostnames) == 0 {
-		return results
+		close(output)
+		return output
 	}
 	if workers <= 0 {
 		workers = 1
 	}
 
-	type job struct {
-		hostname string
-	}
-
-	jobs := make(chan job)
-	output := make(chan Result)
+	jobs := make(chan string)
 	var wg sync.WaitGroup
 
-	startWorker := func() {
+	worker := func() {
 		defer wg.Done()
-		for j := range jobs {
-			output <- r.Resolve(ctx, j.hostname)
+		for hostname := range jobs {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+
+			res := r.Resolve(ctx, hostname)
+
+			select {
+			case output <- res:
+			case <-ctx.Done():
+				return
+			}
 		}
 	}
 
 	for i := 0; i < workers; i++ {
 		wg.Add(1)
-		go startWorker()
+		go worker()
 	}
 
 	go func() {
+		defer close(jobs)
 		for _, hostname := range hostnames {
 			hostname = strings.TrimSpace(hostname)
 			if hostname == "" {
 				continue
 			}
-			jobs <- job{hostname: hostname}
+
+			select {
+			case <-ctx.Done():
+				return
+			case jobs <- hostname:
+			}
 		}
-		close(jobs)
+	}()
+
+	go func() {
 		wg.Wait()
 		close(output)
 	}()
 
-	for res := range output {
-		results[res.Subdomain] = res
-	}
-
-	return results
+	return output
 }
 
 func (r *Resolver) lookupIPAddresses(ctx context.Context, hostname string) ([]string, []string, error) {
 	resolver := r.resolver
 	if resolver == nil {
 		resolver = net.DefaultResolver
+	}
+
+	if err := r.acquire(ctx); err != nil {
+		return nil, nil, err
 	}
 
 	callCtx, cancel := r.withTimeout(ctx)
@@ -222,6 +243,10 @@ func (r *Resolver) lookupCNAME(ctx context.Context, hostname string) (string, er
 		resolver = net.DefaultResolver
 	}
 
+	if err := r.acquire(ctx); err != nil {
+		return "", err
+	}
+
 	callCtx, cancel := r.withTimeout(ctx)
 	defer cancel()
 
@@ -242,6 +267,10 @@ func (r *Resolver) lookupMX(ctx context.Context, hostname string) ([]string, err
 	resolver := r.resolver
 	if resolver == nil {
 		resolver = net.DefaultResolver
+	}
+
+	if err := r.acquire(ctx); err != nil {
+		return nil, err
 	}
 
 	callCtx, cancel := r.withTimeout(ctx)
@@ -267,6 +296,10 @@ func (r *Resolver) lookupTXT(ctx context.Context, hostname string) ([]string, er
 		resolver = net.DefaultResolver
 	}
 
+	if err := r.acquire(ctx); err != nil {
+		return nil, err
+	}
+
 	callCtx, cancel := r.withTimeout(ctx)
 	defer cancel()
 
@@ -287,6 +320,10 @@ func (r *Resolver) lookupNS(ctx context.Context, hostname string) ([]string, err
 	resolver := r.resolver
 	if resolver == nil {
 		resolver = net.DefaultResolver
+	}
+
+	if err := r.acquire(ctx); err != nil {
+		return nil, err
 	}
 
 	callCtx, cancel := r.withTimeout(ctx)
@@ -314,6 +351,16 @@ func (r *Resolver) withTimeout(ctx context.Context) (context.Context, context.Ca
 		return context.WithCancel(ctx)
 	}
 	return context.WithTimeout(ctx, r.timeout)
+}
+
+func (r *Resolver) acquire(ctx context.Context) error {
+	if r.limiter == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return r.limiter.Acquire(ctx)
 }
 
 func uniqueSorted(values []string) []string {
@@ -365,4 +412,64 @@ func ParseServer(address string) (string, error) {
 		}
 	}
 	return net.JoinHostPort(host, port), nil
+}
+
+type pooledDialer struct {
+	dialer  *net.Dialer
+	address string
+	mu      sync.Mutex
+	pools   map[string]chan net.Conn
+}
+
+func newPooledDialer(address string, timeout time.Duration) *pooledDialer {
+	return &pooledDialer{
+		dialer:  &net.Dialer{Timeout: timeout},
+		address: address,
+		pools:   make(map[string]chan net.Conn),
+	}
+}
+
+func (p *pooledDialer) dialContext(ctx context.Context, network string) (net.Conn, error) {
+	pool := p.getPool(network)
+	select {
+	case conn := <-pool:
+		return &pooledConn{Conn: conn, pool: pool}, nil
+	default:
+	}
+
+	conn, err := p.dialer.DialContext(ctx, network, p.address)
+	if err != nil {
+		return nil, err
+	}
+	return &pooledConn{Conn: conn, pool: pool}, nil
+}
+
+func (p *pooledDialer) getPool(network string) chan net.Conn {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if pool, ok := p.pools[network]; ok {
+		return pool
+	}
+	pool := make(chan net.Conn, 64)
+	p.pools[network] = pool
+	return pool
+}
+
+type pooledConn struct {
+	net.Conn
+	pool chan net.Conn
+	once sync.Once
+}
+
+func (p *pooledConn) Close() error {
+	var err error
+	p.once.Do(func() {
+		_ = p.Conn.SetDeadline(time.Time{})
+		select {
+		case p.pool <- p.Conn:
+		default:
+			err = p.Conn.Close()
+		}
+	})
+	return err
 }

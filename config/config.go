@@ -37,6 +37,7 @@ type Config struct {
 	Threads      int
 	DNSServer    string
 	DNSTimeout   time.Duration
+	Timeout      time.Duration
 	ShowAll      bool
 	WordlistPath string
 	Permutations bool
@@ -49,6 +50,8 @@ type Config struct {
 
 	Export0xGenEndpoint string
 	APIKey              string
+
+	RateLimit float64
 }
 
 // BindFlags registers the shared command-line flags and returns a Config
@@ -66,6 +69,7 @@ func BindFlags(cmd *cobra.Command) *Config {
 	flags.IntVar(&cfg.Threads, "threads", 50, "Number of concurrent DNS resolution workers")
 	flags.StringVar(&cfg.DNSServer, "dns-server", "", "Custom DNS server to use for resolution (host or host:port)")
 	flags.DurationVar(&cfg.DNSTimeout, "dns-timeout", 5*time.Second, "Timeout for individual DNS lookups")
+	flags.DurationVar(&cfg.Timeout, "timeout", 30*time.Second, "Global timeout for network operations")
 	flags.BoolVar(&cfg.ShowAll, "show-all", false, "Include subdomains without DNS records in the output")
 	flags.StringVar(&cfg.WordlistPath, "wordlist", "", "Path to a custom wordlist for active bruteforce enumeration")
 	flags.BoolVar(&cfg.Permutations, "permutations", true, "Enable wordlist permutations when bruteforcing")
@@ -75,6 +79,7 @@ func BindFlags(cmd *cobra.Command) *Config {
 	flags.BoolVar(&cfg.ProbeHTTP, "probe", false, "Probe discovered subdomains over HTTP and HTTPS to capture status codes")
 	flags.StringVar(&cfg.Export0xGenEndpoint, "export-0xgen", "", "0xg3n hub API endpoint to export discovered subdomains")
 	flags.StringVar(&cfg.APIKey, "api-key", "", "API key used for authenticated exports (falls back to NITR0G3N_API_KEY env var)")
+	flags.Float64Var(&cfg.RateLimit, "rate-limit", 0, "Maximum number of outbound requests per second (0 for unlimited)")
 
 	return cfg
 }
@@ -149,8 +154,12 @@ func (c *Config) Validate() error {
 	c.DNSServer = strings.TrimSpace(c.DNSServer)
 	c.WordlistPath = strings.TrimSpace(c.WordlistPath)
 
+	if c.Timeout <= 0 {
+		c.Timeout = 30 * time.Second
+	}
+
 	if c.DNSTimeout <= 0 {
-		c.DNSTimeout = 5 * time.Second
+		c.DNSTimeout = c.Timeout
 	}
 
 	return nil
