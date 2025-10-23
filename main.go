@@ -6,12 +6,14 @@ import (
 	"path"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/yourusername/nitr0g3n/active/bruteforce"
 	"github.com/yourusername/nitr0g3n/active/zonetransfer"
 	"github.com/yourusername/nitr0g3n/config"
+	"github.com/yourusername/nitr0g3n/exporter/oxg3n"
 	"github.com/yourusername/nitr0g3n/filters"
 	"github.com/yourusername/nitr0g3n/output"
 	"github.com/yourusername/nitr0g3n/passive"
@@ -42,6 +44,17 @@ infrastructure quickly and accurately.`,
 			return err
 		}
 		defer writer.Close()
+
+		exporter, err := oxg3n.NewExporter(oxg3n.Options{
+			Endpoint:  cfg.Export0xGenEndpoint,
+			APIKey:    cfg.APIKey,
+			Domain:    cfg.Domain,
+			BatchSize: 100,
+			Logger:    cmd.ErrOrStderr(),
+		})
+		if err != nil {
+			return err
+		}
 
 		if cfg.Verbose {
 			cmd.Println("Verbose output enabled")
@@ -214,8 +227,30 @@ infrastructure quickly and accurately.`,
 			if cfg.ProbeHTTP && httpClient != nil {
 				record.HTTPServices = httpClient.Probe(cmd.Context(), subdomain)
 			}
+			if record.Timestamp == "" {
+				record.Timestamp = time.Now().UTC().Format(time.RFC3339)
+			}
+
 			if err := writer.WriteRecord(record); err != nil {
 				return fmt.Errorf("writing record: %w", err)
+			}
+
+			if exporter != nil {
+				if err := exporter.AddRecord(cmd.Context(), record); err != nil {
+					return fmt.Errorf("exporting to 0xg3n: %w", err)
+				}
+			}
+		}
+
+		if exporter != nil {
+			summary, err := exporter.Flush(cmd.Context())
+			if err != nil {
+				return fmt.Errorf("finalising 0xg3n export: %w", err)
+			}
+			if summary.TotalRecords > 0 || summary.BatchesSent > 0 {
+				cmd.Printf("0xg3n export complete: %d record(s) across %d batch(es)\n", summary.TotalRecords, summary.BatchesSent)
+			} else {
+				cmd.Println("0xg3n export complete: no records to send")
 			}
 		}
 
