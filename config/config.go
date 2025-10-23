@@ -46,6 +46,9 @@ type Config struct {
 	Scope            []string
 	UniqueIPs        bool
 	ProbeHTTP        bool
+
+	Export0xGenEndpoint string
+	APIKey              string
 }
 
 // BindFlags registers the shared command-line flags and returns a Config
@@ -70,6 +73,8 @@ func BindFlags(cmd *cobra.Command) *Config {
 	flags.StringSliceVar(&cfg.Scope, "scope", nil, "Restrict output to subdomains matching the provided glob patterns or TLD suffixes")
 	flags.BoolVar(&cfg.UniqueIPs, "unique-ips", false, "Only output subdomains that resolve to new unique IP addresses")
 	flags.BoolVar(&cfg.ProbeHTTP, "probe", false, "Probe discovered subdomains over HTTP and HTTPS to capture status codes")
+	flags.StringVar(&cfg.Export0xGenEndpoint, "export-0xgen", "", "0xg3n hub API endpoint to export discovered subdomains")
+	flags.StringVar(&cfg.APIKey, "api-key", "", "API key used for authenticated exports (falls back to NITR0G3N_API_KEY env var)")
 
 	return cfg
 }
@@ -129,6 +134,13 @@ func (c *Config) Validate() error {
 	if c.VirusTotalAPIKey == "" {
 		c.VirusTotalAPIKey = strings.TrimSpace(os.Getenv("VIRUSTOTAL_API_KEY"))
 	}
+
+	if c.APIKey == "" {
+		c.APIKey = strings.TrimSpace(os.Getenv("NITR0G3N_API_KEY"))
+	}
+
+	c.Export0xGenEndpoint = strings.TrimSpace(c.Export0xGenEndpoint)
+	c.APIKey = strings.TrimSpace(c.APIKey)
 
 	if c.Threads <= 0 {
 		c.Threads = 50
