@@ -410,9 +410,11 @@ func runCycle(ctx context.Context, cfg *config.Config, logger *logging.Logger, l
 	sort.Strings(subdomains)
 
 	resolveOpts := resolver.Options{
-		Server:      cfg.DNSServer,
-		Timeout:     cfg.DNSTimeout,
-		RateLimiter: limiter,
+		Server:       cfg.DNSServer,
+		Timeout:      cfg.DNSTimeout,
+		RateLimiter:  limiter,
+		CacheEnabled: cfg.DNSCache,
+		CacheSize:    cfg.DNSCacheSize,
 	}
 	dnsResolver, err := resolver.New(resolveOpts)
 	if err != nil {

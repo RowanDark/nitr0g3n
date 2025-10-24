@@ -25,9 +25,17 @@ type dnsResolver interface {
 
 // Options controls Resolver instantiation behaviour.
 type Options struct {
-	Server      string
-	Timeout     time.Duration
-	RateLimiter *ratelimit.Limiter
+	Server       string
+	Timeout      time.Duration
+	RateLimiter  *ratelimit.Limiter
+	CacheEnabled bool
+	CacheSize    int
+}
+
+var defaultDNSServers = []string{
+	"8.8.8.8:53",
+	"1.1.1.1:53",
+	"9.9.9.9:53",
 }
 
 // Resolver performs DNS lookups against the system resolver or a custom server.
@@ -36,7 +44,6 @@ type Resolver struct {
 	timeout  time.Duration
 	server   string
 	limiter  *ratelimit.Limiter
-	dialer   *pooledDialer
 }
 
 // Result summarises the DNS records discovered for a hostname.
@@ -54,33 +61,28 @@ func New(options Options) (*Resolver, error) {
 		r.timeout = 5 * time.Second
 	}
 
-	if strings.TrimSpace(options.Server) == "" {
-		r.resolver = net.DefaultResolver
-		return r, nil
+	servers, err := resolveServers(options.Server)
+	if err != nil {
+		return nil, err
 	}
 
-	addr := options.Server
-	if !strings.Contains(addr, ":") {
-		addr = net.JoinHostPort(strings.TrimSpace(addr), "53")
+	cacheSize := options.CacheSize
+	if cacheSize <= 0 {
+		cacheSize = 10000
 	}
 
-	r.server = addr
-	r.dialer = newPooledDialer(addr, r.timeout)
-	r.resolver = &net.Resolver{
-		PreferGo: true,
-		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
-			dctx := ctx
-			var cancel context.CancelFunc
-			if r.timeout > 0 {
-				dctx, cancel = context.WithTimeout(ctx, r.timeout)
-			}
-			conn, err := r.dialer.dialContext(dctx, network)
-			if cancel != nil {
-				cancel()
-			}
-			return conn, err
-		},
+	client, err := newDNSClient(dnsClientOptions{
+		Servers:      servers,
+		Timeout:      r.timeout,
+		CacheSize:    cacheSize,
+		CacheEnabled: options.CacheEnabled,
+	})
+	if err != nil {
+		return nil, err
 	}
+
+	r.resolver = client
+	r.server = strings.Join(servers, ",")
 
 	return r, nil
 }
@@ -439,62 +441,37 @@ func ParseServer(address string) (string, error) {
 	return net.JoinHostPort(host, port), nil
 }
 
-type pooledDialer struct {
-	dialer  *net.Dialer
-	address string
-	mu      sync.Mutex
-	pools   map[string]chan net.Conn
-}
-
-func newPooledDialer(address string, timeout time.Duration) *pooledDialer {
-	return &pooledDialer{
-		dialer:  &net.Dialer{Timeout: timeout},
-		address: address,
-		pools:   make(map[string]chan net.Conn),
-	}
-}
-
-func (p *pooledDialer) dialContext(ctx context.Context, network string) (net.Conn, error) {
-	pool := p.getPool(network)
-	select {
-	case conn := <-pool:
-		return &pooledConn{Conn: conn, pool: pool}, nil
-	default:
-	}
-
-	conn, err := p.dialer.DialContext(ctx, network, p.address)
-	if err != nil {
-		return nil, err
-	}
-	return &pooledConn{Conn: conn, pool: pool}, nil
-}
-
-func (p *pooledDialer) getPool(network string) chan net.Conn {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if pool, ok := p.pools[network]; ok {
-		return pool
-	}
-	pool := make(chan net.Conn, 64)
-	p.pools[network] = pool
-	return pool
-}
-
-type pooledConn struct {
-	net.Conn
-	pool chan net.Conn
-	once sync.Once
-}
-
-func (p *pooledConn) Close() error {
-	var err error
-	p.once.Do(func() {
-		_ = p.Conn.SetDeadline(time.Time{})
-		select {
-		case p.pool <- p.Conn:
-		default:
-			err = p.Conn.Close()
+func resolveServers(custom string) ([]string, error) {
+	servers := make([]string, 0, len(defaultDNSServers)+1)
+	trimmed := strings.TrimSpace(custom)
+	if trimmed != "" {
+		parsed, err := ParseServer(trimmed)
+		if err != nil {
+			return nil, err
 		}
-	})
-	return err
+		servers = append(servers, parsed)
+	}
+
+	for _, candidate := range defaultDNSServers {
+		if !containsServer(servers, candidate) {
+			servers = append(servers, candidate)
+		}
+	}
+
+	if len(servers) == 0 {
+		servers = append(servers, defaultDNSServers...)
+	}
+
+	return servers, nil
 }
+
+func containsServer(servers []string, candidate string) bool {
+	for _, server := range servers {
+		if strings.EqualFold(server, candidate) {
+			return true
+		}
+	}
+	return false
+}
+
+// resolveServers and containsServer assist with preparing the upstream resolver list.

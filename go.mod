@@ -3,7 +3,7 @@ module github.com/yourusername/nitr0g3n
 go 1.24.3
 
 require (
-	github.com/miekg/dns v1.1.57
+	github.com/miekg/dns v1.1.55
 	github.com/spf13/cobra v1.10.1
 	github.com/spf13/pflag v1.0.10
 	golang.org/x/image v0.32.0

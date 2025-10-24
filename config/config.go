@@ -44,6 +44,8 @@ type Config struct {
 	Threads       int
 	DNSServer     string
 	DNSTimeout    time.Duration
+	DNSCache      bool
+	DNSCacheSize  int
 	Timeout       time.Duration
 	ShowAll       bool
 	WordlistPath  string
@@ -90,6 +92,9 @@ func BindFlags(cmd *cobra.Command) *Config {
 	flags.StringVar(&cfg.Profile, "profile", "", "Named configuration profile to apply from the config file")
 	flags.StringVar(&cfg.DNSServer, "dns-server", "", "Custom DNS server to use for resolution (host or host:port)")
 	flags.DurationVar(&cfg.DNSTimeout, "dns-timeout", 5*time.Second, "Timeout for individual DNS lookups")
+	cfg.DNSCache = true
+	flags.BoolVar(&cfg.DNSCache, "dns-cache", cfg.DNSCache, "Enable in-memory DNS result caching")
+	flags.IntVar(&cfg.DNSCacheSize, "dns-cache-size", 10000, "Maximum number of DNS cache entries to retain")
 	flags.DurationVar(&cfg.Timeout, "timeout", 30*time.Second, "Global timeout for network operations")
 	flags.BoolVar(&cfg.ShowAll, "show-all", false, "Include subdomains without DNS records in the output")
 	flags.StringVar(&cfg.WordlistPath, "wordlist", "", "Path to a custom wordlist for active bruteforce enumeration")
@@ -189,6 +194,10 @@ func (c *Config) Validate() error {
 
 	if c.DNSTimeout <= 0 {
 		c.DNSTimeout = c.Timeout
+	}
+
+	if c.DNSCacheSize <= 0 {
+		c.DNSCacheSize = 10000
 	}
 
 	if c.WatchInterval <= 0 {

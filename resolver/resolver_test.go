@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 )
@@ -51,8 +52,9 @@ func TestNewResolverDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if r.Server() != "" {
-		t.Fatalf("expected empty server, got %q", r.Server())
+	expectedServers := strings.Join(defaultDNSServers, ",")
+	if r.Server() != expectedServers {
+		t.Fatalf("expected default servers %q, got %q", expectedServers, r.Server())
 	}
 	if r.Timeout() != 5*time.Second {
 		t.Fatalf("expected default timeout, got %s", r.Timeout())
@@ -64,11 +66,9 @@ func TestNewResolverCustomServer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got, want := r.Server(), "1.1.1.1:53"; got != want {
-		t.Fatalf("expected server %q, got %q", want, got)
-	}
-	if r.dialer == nil {
-		t.Fatalf("expected dialer to be initialised")
+	expected := strings.Join([]string{"1.1.1.1:53", "8.8.8.8:53", "9.9.9.9:53"}, ",")
+	if got := r.Server(); got != expected {
+		t.Fatalf("expected server list %q, got %q", expected, got)
 	}
 }
 
