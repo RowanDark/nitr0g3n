@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/signal"
@@ -43,7 +44,7 @@ var rootCmd = &cobra.Command{
 	Long: `nitr0g3n is an extensible reconnaissance toolkit focused on domain intelligence.
 It provides active and passive discovery workflows to help analysts profile
 infrastructure quickly and accurately.`,
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(cmd *cobra.Command, args []string) (runErr error) {
 		ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
 
@@ -61,7 +62,12 @@ infrastructure quickly and accurately.`,
 			return err
 		}
 
-		logger, err := logging.New(logging.Options{Level: level, Console: cmd.ErrOrStderr(), FilePath: cfg.LogFile})
+		console := cmd.ErrOrStderr()
+		if cfg.Silent {
+			console = io.Discard
+		}
+
+		logger, err := logging.New(logging.Options{Level: level, Console: console, FilePath: cfg.LogFile})
 		if err != nil {
 			return err
 		}
@@ -114,7 +120,12 @@ infrastructure quickly and accurately.`,
 
 		tracker := stats.NewTracker(stats.Options{Logger: logger})
 		tracker.Start(ctx.Done())
-		defer tracker.Stop()
+		defer func() {
+			snapshot := tracker.Stop()
+			if runErr == nil {
+				logScanSummary(logger, cfg, snapshot)
+			}
+		}()
 
 		if cfg.Mode == config.ModePassive || cfg.Mode == config.ModeAll {
 			passiveSources, err := buildPassiveSources(cfg, httpClient)
@@ -336,6 +347,41 @@ infrastructure quickly and accurately.`,
 
 func init() {
 	cfg = config.BindFlags(rootCmd)
+}
+
+func logScanSummary(logger *logging.Logger, cfg *config.Config, snapshot stats.Snapshot) {
+	if logger == nil || cfg == nil {
+		return
+	}
+
+	duration := snapshot.Duration
+	durationStr := "<1s"
+	if duration > 0 {
+		rounded := duration.Truncate(time.Second)
+		if rounded == 0 {
+			rounded = duration
+		}
+		durationStr = rounded.String()
+	}
+
+	unresolved := snapshot.Attempts - snapshot.Resolved
+	if unresolved < 0 {
+		unresolved = 0
+	}
+
+	logger.Infof("Scan complete for %s: %d subdomains discovered (%d resolved, %d unresolved)", cfg.Domain, snapshot.TotalFound, snapshot.Resolved, unresolved)
+	logger.Infof("Resolution attempts: %d total (success rate %.1f%%) across %s", snapshot.Attempts, snapshot.ResolutionRate(), durationStr)
+	logger.Infof("Active/passive discovery ratio: %s", snapshot.ActivePassiveRatio())
+
+	if breakdown := stats.FormatSourceBreakdown(snapshot.Sources, 5); breakdown != "" {
+		logger.Infof("Top discovery sources: %s", breakdown)
+	}
+
+	if cfg.LiveOutput() {
+		logger.Infof("Results streamed to stdout using %s format", cfg.Format)
+	} else if cfg.OutputPath != "" {
+		logger.Infof("Results saved to %s", cfg.OutputPath)
+	}
 }
 
 func buildPassiveSources(cfg *config.Config, httpClient *http.Client) ([]passive.Source, error) {

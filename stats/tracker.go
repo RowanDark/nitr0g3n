@@ -83,17 +83,17 @@ func (t *Tracker) Start(ctxDone <-chan struct{}) {
 	}()
 }
 
-func (t *Tracker) Stop() {
+func (t *Tracker) Stop() Snapshot {
 	if t == nil {
-		return
+		return Snapshot{}
 	}
 	t.stopOnce.Do(func() {
 		close(t.done)
 		if t.ticker != nil {
 			t.ticker.Stop()
 		}
-		t.logSnapshot(true)
 	})
+	return t.Snapshot()
 }
 
 func (t *Tracker) RecordAttempt(resolved bool) {
@@ -174,7 +174,7 @@ func (t *Tracker) logSnapshot(final bool) {
 		t.logger.Infof("Scan statistics: %s", t.renderSnapshot(snapshot))
 		return
 	}
-	t.logger.Debugf("Stats update: %s", t.renderSnapshot(snapshot))
+	t.logger.Infof("Stats update: %s", t.renderSnapshot(snapshot))
 }
 
 func (t *Tracker) renderSnapshot(s Snapshot) string {
@@ -186,12 +186,16 @@ func (t *Tracker) renderSnapshot(s Snapshot) string {
 		fmt.Sprintf("duration=%s", s.Duration.Truncate(time.Second)),
 	}
 	if len(s.Sources) > 0 {
-		parts = append(parts, fmt.Sprintf("sources=%s", t.formatSources(s.Sources)))
+		parts = append(parts, fmt.Sprintf("sources=%s", FormatSourceBreakdown(s.Sources, 5)))
 	}
 	return strings.Join(parts, " | ")
 }
 
-func (t *Tracker) formatSources(sources map[string]int) string {
+// FormatSourceBreakdown converts a map of source counts into a human readable string.
+func FormatSourceBreakdown(sources map[string]int, limit int) string {
+	if limit <= 0 {
+		limit = len(sources)
+	}
 	type item struct {
 		name  string
 		count int
@@ -206,8 +210,8 @@ func (t *Tracker) formatSources(sources map[string]int) string {
 		}
 		return entries[i].count > entries[j].count
 	})
-	if len(entries) > 5 {
-		entries = entries[:5]
+	if len(entries) > limit {
+		entries = entries[:limit]
 	}
 	formatted := make([]string, 0, len(entries))
 	for _, entry := range entries {

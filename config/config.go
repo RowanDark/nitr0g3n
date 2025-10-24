@@ -32,6 +32,7 @@ type Config struct {
 	Mode         string
 	OutputPath   string
 	Verbose      bool
+	Silent       bool
 	LogLevel     string
 	LogFile      string
 	Format       Format
@@ -66,6 +67,7 @@ func BindFlags(cmd *cobra.Command) *Config {
 	flags.StringVarP(&cfg.Mode, "mode", "m", string(ModePassive), "Enumeration mode to use (active, passive, or all)")
 	flags.StringVarP(&cfg.OutputPath, "output", "o", "", "Optional file path to write results")
 	flags.BoolVarP(&cfg.Verbose, "verbose", "v", false, "Enable verbose logging output")
+	flags.BoolVar(&cfg.Silent, "silent", false, "Suppress non-essential console output (only emit final results)")
 	flags.StringVar(&cfg.LogLevel, "log-level", "info", "Logging level (debug, info, warn, error)")
 	flags.StringVar(&cfg.LogFile, "log-file", "", "Optional file path to append structured logs")
 	flags.StringVar((*string)(&cfg.Format), "format", string(FormatJSON), "Output format (json, csv, txt)")
@@ -167,6 +169,10 @@ func (c *Config) Validate() error {
 
 	if c.DNSTimeout <= 0 {
 		c.DNSTimeout = c.Timeout
+	}
+
+	if c.Silent && c.Verbose {
+		return fmt.Errorf("--silent cannot be combined with --verbose")
 	}
 
 	return nil
