@@ -1,0 +1,119 @@
+package output
+
+import (
+	"encoding/csv"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/yourusername/nitr0g3n/config"
+)
+
+func TestJSONWriter(t *testing.T) {
+	cfg := &config.Config{Format: config.FormatJSON, OutputPath: filepath.Join(t.TempDir(), "out.json")}
+	writer, err := NewWriter(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	record := Record{Subdomain: "www.example.com", Source: "test"}
+	if err := writer.WriteRecord(record); err != nil {
+		t.Fatalf("write failed: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close failed: %v", err)
+	}
+
+	data, err := os.ReadFile(cfg.OutputPath)
+	if err != nil {
+		t.Fatalf("reading file: %v", err)
+	}
+	var decoded Record
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("decoding json: %v", err)
+	}
+	if decoded.Timestamp == "" {
+		t.Fatalf("expected timestamp to be populated")
+	}
+}
+
+func TestCSVWriter(t *testing.T) {
+	cfg := &config.Config{Format: config.FormatCSV, OutputPath: filepath.Join(t.TempDir(), "out.csv")}
+	writer, err := NewWriter(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	record := Record{
+		Subdomain:   "api.example.com",
+		Source:      "test",
+		IPAddresses: []string{"192.0.2.1"},
+		DNSRecords:  map[string][]string{"A": []string{"192.0.2.1"}},
+	}
+	if err := writer.WriteRecord(record); err != nil {
+		t.Fatalf("write failed: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close failed: %v", err)
+	}
+
+	file, err := os.Open(cfg.OutputPath)
+	if err != nil {
+		t.Fatalf("open file: %v", err)
+	}
+	defer file.Close()
+
+	csvReader := csv.NewReader(file)
+	rows, err := csvReader.ReadAll()
+	if err != nil {
+		t.Fatalf("read csv: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("expected header and row, got %d", len(rows))
+	}
+}
+
+func TestTXTWriter(t *testing.T) {
+	cfg := &config.Config{Format: config.FormatTXT, OutputPath: filepath.Join(t.TempDir(), "out.txt")}
+	writer, err := NewWriter(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	record := Record{
+		Subdomain:    "login.example.com",
+		Source:       "test",
+		IPAddresses:  []string{"198.51.100.5"},
+		DNSRecords:   map[string][]string{"A": []string{"198.51.100.5"}},
+		HTTPServices: []HTTPService{{URL: "https://login.example.com", StatusCode: 200}},
+	}
+	if err := writer.WriteRecord(record); err != nil {
+		t.Fatalf("write failed: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close failed: %v", err)
+	}
+
+	data, err := os.ReadFile(cfg.OutputPath)
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "Subdomain: login.example.com") {
+		t.Fatalf("unexpected txt output: %s", content)
+	}
+}
+
+func TestFlattenHelpers(t *testing.T) {
+	dns := map[string][]string{"A": []string{"192.0.2.1"}, "MX": []string{"10 mail.example.com"}}
+	if got := flattenDNSRecords(dns); got == "" || !strings.Contains(got, "A=192.0.2.1") {
+		t.Fatalf("unexpected dns flatten result: %s", got)
+	}
+
+	services := []HTTPService{{URL: "https://example.com", StatusCode: 200}, {URL: "http://example.com", Error: "timeout"}}
+	if got := flattenHTTPServices(services); !strings.Contains(got, "https://example.com:200") || !strings.Contains(got, "http://example.com:error=timeout") {
+		t.Fatalf("unexpected http flatten result: %s", got)
+	}
+}

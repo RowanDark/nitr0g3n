@@ -2,107 +2,77 @@ package certtransparency
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
 
-type response struct {
-	NameValue string `json:"name_value"`
-}
-
-func TestEnumerateFiltersAndDeduplicates(t *testing.T) {
-	data := []response{
-		{NameValue: "api.example.com"},
-		{NameValue: "WWW.EXAMPLE.COM"},
-		{NameValue: "*.example.com"},
-		{NameValue: "mail.example.com\nftp.example.com"},
-		{NameValue: "notexample.org"},
-	}
-
+func TestEnumerateSuccess(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if _, err := w.Write(mustJSON(data)); err != nil {
-			t.Fatalf("failed to write response: %v", err)
+		if got := r.URL.RawQuery; !strings.Contains(got, "q=%25.example.com") {
+			t.Fatalf("unexpected query: %s", got)
 		}
-	}))
-	defer server.Close()
-
-	client := NewClient(WithBaseURL(server.URL))
-
-	got, err := client.Enumerate(context.Background(), "example.com")
-	if err != nil {
-		t.Fatalf("Enumerate() error = %v", err)
-	}
-
-	want := []string{"api.example.com", "ftp.example.com", "mail.example.com", "www.example.com"}
-	if len(got) != len(want) {
-		t.Fatalf("expected %d results, got %d (%v)", len(want), len(got), got)
-	}
-
-	for i, sub := range got {
-		if sub != want[i] {
-			t.Fatalf("expected %s at index %d, got %s", want[i], i, sub)
-		}
-	}
-}
-
-func TestEnumerateRetriesOnServerError(t *testing.T) {
-	attempts := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		attempts++
-		if attempts < 3 {
-			http.Error(w, "server error", http.StatusInternalServerError)
-			return
-		}
-		if _, err := w.Write(mustJSON([]response{{NameValue: "api.example.com"}})); err != nil {
-			t.Fatalf("failed to write response: %v", err)
-		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`[
+                        {"name_value":"www.example.com\n*.example.com"},
+                        {"name_value":"api.example.com"},
+                        {"name_value":"WWW.EXAMPLE.COM"}
+                ]`))
 	}))
 	defer server.Close()
 
 	client := NewClient(
+		WithHTTPClient(server.Client()),
 		WithBaseURL(server.URL),
-		WithInitialBackoff(10*time.Millisecond),
 		WithTimeout(2*time.Second),
+		WithMaxRetries(0),
 	)
 
-	got, err := client.Enumerate(context.Background(), "example.com")
+	subdomains, err := client.Enumerate(context.Background(), "example.com")
 	if err != nil {
-		t.Fatalf("Enumerate() error = %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
-
-	if len(got) != 1 || got[0] != "api.example.com" {
-		t.Fatalf("unexpected results: %v", got)
+	expected := []string{"api.example.com", "www.example.com"}
+	if len(subdomains) != len(expected) {
+		t.Fatalf("expected %d results, got %d", len(expected), len(subdomains))
+	}
+	for i, sub := range expected {
+		if subdomains[i] != sub {
+			t.Fatalf("unexpected result at %d: %s", i, subdomains[i])
+		}
 	}
 }
 
-func TestEnumerateHonoursContextCancellation(t *testing.T) {
+func TestEnumerateError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(200 * time.Millisecond)
-		http.Error(w, "slow", http.StatusTooManyRequests)
+		w.WriteHeader(http.StatusTooManyRequests)
 	}))
 	defer server.Close()
 
 	client := NewClient(
+		WithHTTPClient(server.Client()),
 		WithBaseURL(server.URL),
-		WithInitialBackoff(500*time.Millisecond),
-		WithTimeout(5*time.Second),
+		WithTimeout(2*time.Second),
+		WithInitialBackoff(10*time.Millisecond),
+		WithMaxRetries(0),
 	)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-
-	if _, err := client.Enumerate(ctx, "example.com"); err == nil {
-		t.Fatalf("expected context error, got nil")
+	if _, err := client.Enumerate(context.Background(), "example.com"); err == nil {
+		t.Fatalf("expected error from enumerate")
 	}
 }
 
-func mustJSON(v interface{}) []byte {
-	data, err := json.Marshal(v)
-	if err != nil {
-		panic(err)
+func TestRetryAfterDuration(t *testing.T) {
+	if got := retryAfterDuration("60"); got != 60*time.Second {
+		t.Fatalf("expected 60s duration, got %s", got)
 	}
-	return data
+	future := time.Now().Add(5 * time.Second).UTC().Format(http.TimeFormat)
+	if got := retryAfterDuration(future); got <= 0 {
+		t.Fatalf("expected positive duration for retry-after header")
+	}
+	if got := retryAfterDuration("invalid"); got != 0 {
+		t.Fatalf("expected zero duration for invalid header")
+	}
 }

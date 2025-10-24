@@ -10,13 +10,20 @@ import (
 	"github.com/yourusername/nitr0g3n/resolver"
 )
 
+// DNSResolver captures the subset of resolver.Resolver required for wildcard detection.
+type DNSResolver interface {
+	Resolve(context.Context, string) resolver.Result
+}
+
+// WildcardProfile represents the DNS records observed for wildcard responses.
 type WildcardProfile struct {
 	active bool
 	ips    map[string]struct{}
 	cnames map[string]struct{}
 }
 
-func DetectWildcard(ctx context.Context, r *resolver.Resolver, domain string, samples int) (WildcardProfile, error) {
+// DetectWildcard probes random subdomains to identify wildcard DNS behaviour.
+func DetectWildcard(ctx context.Context, r DNSResolver, domain string, samples int) (WildcardProfile, error) {
 	profile := WildcardProfile{}
 	if r == nil || strings.TrimSpace(domain) == "" {
 		return profile, nil
@@ -56,10 +63,12 @@ func DetectWildcard(ctx context.Context, r *resolver.Resolver, domain string, sa
 	return profile, nil
 }
 
+// Active indicates whether the profile captured successful wildcard responses.
 func (p WildcardProfile) Active() bool {
 	return p.active
 }
 
+// Matches reports whether the provided DNS result aligns with the wildcard profile.
 func (p WildcardProfile) Matches(res resolver.Result) bool {
 	if !p.Active() {
 		return false
@@ -95,6 +104,7 @@ func (p WildcardProfile) Matches(res resolver.Result) bool {
 	return false
 }
 
+// IsCDNResponse heuristically determines if DNS records likely point to a CDN.
 func IsCDNResponse(records map[string][]string) bool {
 	if len(records) == 0 {
 		return false
