@@ -122,6 +122,19 @@ passive intelligence with curated bruteforce lists and can seamlessly push
 findings into the 0xg3n hub. Pair it with ffuf for web content discovery or
 subfinder for quick passive sweeps.
 
+## Security Considerations
+
+* **Respect rate limiting:** Many data sources and target domains enforce
+  request throttling. Configure `--threads`, backoff intervals, and source
+  selections to remain within published policies and avoid service disruption.
+* **Authorized testing only:** Run nitr0g3n exclusively against assets you own
+  or have explicit permission to assess. Unauthorized probing may violate laws
+  or terms of service in your jurisdiction.
+* **Practice responsible disclosure:** If you discover sensitive findings,
+  follow coordinated disclosure guidelines. Notify the asset owner promptly,
+  share only the necessary technical details, and allow a reasonable remediation
+  window before publishing results.
+
 ## Testing
 
 Run the full unit test suite with:
