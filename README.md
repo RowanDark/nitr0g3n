@@ -159,6 +159,60 @@ subfinder for quick passive sweeps.
   share only the necessary technical details, and allow a reasonable remediation
   window before publishing results.
 
+## Error Handling
+
+nitr0g3n attempts to detect and gracefully handle common issues that arise
+during enumeration. The CLI surfaces actionable messages and, where possible,
+offers hints on how to resolve the problem. Typical scenarios include:
+
+* **Missing API credentials:** Passive sources such as VirusTotal require
+  configured API keys before queries succeed. When nitr0g3n encounters a 401 or
+  403 response, it skips the source and emits a warning that includes the name
+  of the provider. Supply a valid key via `--api-key` or the corresponding
+  environment variable before retrying the scan.
+* **Rate limiting:** Remote APIs and DNS resolvers may throttle requests when
+  limits are exceeded. nitr0g3n automatically backs off and retries with
+  exponential delays, and records the behaviour in the log output. Reduce
+  `--threads`, remove optional sources, or increase the delay between requests
+  to avoid repeated throttling.
+* **DNS resolution failures:** When active bruteforcing encounters SERVFAIL or
+  NXDOMAIN responses, the tool classifies them as expected negative results and
+  continues. Persistent lookup errors across all nameservers trigger a warning
+  that suggests switching to a different resolver via `--resolver` or the
+  configuration file.
+* **File system write errors:** nitr0g3n writes results, probe screenshots, and
+  diff snapshots to disk. If the destination directory is missing or has
+  restricted permissions the CLI halts the affected export and reports the path
+  that failed. Create the directory ahead of time or adjust permissions before
+  rerunning.
+* **Webhook delivery issues:** Failed HTTP callbacks are retried with a limited
+  backoff schedule. After the retry budget is exhausted, nitr0g3n logs the final
+  HTTP status code. Verify network reachability, TLS settings, and any required
+  authentication headers when troubleshooting webhook integrations.
+
+## Troubleshooting
+
+When scans do not behave as expected, start with the following checks:
+
+1. **Inspect the logs:** Run nitr0g3n with `--log-level debug` to view detailed
+   diagnostic messages, including HTTP response codes, retry attempts, and
+   resolver statistics.
+2. **Validate configuration files:** Use `nitro --config path/to/config.yaml --dry-run`
+   to verify that all sections parse correctly and that referenced files exist.
+3. **Test connectivity:** Confirm outbound DNS and HTTPS connectivity from the
+   running environment. Utilities like `dig`, `nslookup`, or `curl` can help
+   pinpoint blocked ports and firewall restrictions.
+4. **Simplify the workload:** Temporarily disable optional features such as
+   probing, permutations, or exports to isolate the component that is failing.
+5. **Review upstream status pages:** Many passive data sources publish service
+   outage information. A sudden spike in errors may be due to provider downtime
+   rather than local misconfiguration.
+
+If issues persist, open a GitHub issue with a copy of the debug log (redacting
+any sensitive data) and a description of the environment in which nitr0g3n is
+running. Community members and maintainers can offer additional guidance based
+on the collected diagnostics.
+
 ## Testing
 
 Run the full unit test suite with:
