@@ -384,6 +384,7 @@ func runCycle(ctx context.Context, cfg *config.Config, logger *logging.Logger, l
 			DNSServer:      cfg.DNSServer,
 			Timeout:        cfg.DNSTimeout,
 			Workers:        cfg.Threads,
+			AutoTune:       cfg.AutoTune,
 			ProgressWriter: progressWriter,
 			RateLimiter:    limiter,
 		}

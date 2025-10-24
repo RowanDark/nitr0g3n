@@ -33,6 +33,7 @@ type profileSettings struct {
 	JSONPretty          *bool          `yaml:"json_pretty"`
 	Sources             *StringSlice   `yaml:"sources"`
 	Threads             *int           `yaml:"threads"`
+	AutoTune            *bool          `yaml:"auto_tune"`
 	DNSServer           *string        `yaml:"dns_server"`
 	DNSTimeout          *time.Duration `yaml:"dns_timeout"`
 	DNSCache            *bool          `yaml:"dns_cache"`
@@ -188,6 +189,9 @@ func applyProfileSettings(cfg *Config, profile *profileSettings, cmd *cobra.Comm
 	}
 	if profile.Threads != nil && !flagChanged(flags, "threads") {
 		cfg.Threads = *profile.Threads
+	}
+	if profile.AutoTune != nil && !flagChanged(flags, "auto-tune") {
+		cfg.AutoTune = *profile.AutoTune
 	}
 	if profile.DNSServer != nil && !flagChanged(flags, "dns-server") {
 		cfg.DNSServer = strings.TrimSpace(*profile.DNSServer)

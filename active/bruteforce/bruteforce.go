@@ -26,6 +26,7 @@ type Options struct {
 	DNSServer      string
 	Timeout        time.Duration
 	Workers        int
+	AutoTune       bool
 	ProgressWriter io.Writer
 	RateLimiter    *ratelimit.Limiter
 }
@@ -35,6 +36,12 @@ type Result struct {
 	Rcode     int
 	Answers   []string
 }
+
+const (
+	defaultBatchSize   = 100
+	minAutoTuneWorkers = 50
+	maxAutoTuneWorkers = 500
+)
 
 func Run(ctx context.Context, opts Options) ([]Result, error) {
 	if ctx == nil {
@@ -75,64 +82,70 @@ func Run(ctx context.Context, opts Options) ([]Result, error) {
 		timeout = 5 * time.Second
 	}
 
-	workers := opts.Workers
-	if workers <= 0 {
-		workers = 10
-	}
-
 	reporter := newProgressReporter(len(hostnames), opts.ProgressWriter)
 	reporter.Start()
 	defer reporter.Stop()
 
-	type job struct {
-		hostname string
+	jobs := make(chan []string)
+	results := make(chan Result, 256)
+	metrics := make(chan queryMetric, 512)
+
+	pool := newWorkerPool(ctx, workerPoolConfig{
+		server:   server,
+		timeout:  timeout,
+		limiter:  opts.RateLimiter,
+		jobs:     jobs,
+		results:  results,
+		metrics:  metrics,
+		reporter: reporter,
+	})
+
+	initialWorkers := opts.Workers
+	if opts.AutoTune {
+		initialWorkers = minAutoTuneWorkers
 	}
+	if initialWorkers <= 0 {
+		initialWorkers = 10
+	}
+	pool.SetSize(initialWorkers)
 
-	jobs := make(chan job)
-	results := make(chan Result)
-	var wg sync.WaitGroup
+	var batchDelay atomic.Int64
 
-	queryFunc := func() {
-		defer wg.Done()
-		client := &dns.Client{Timeout: timeout}
-		for j := range jobs {
+	controllerCtx, controllerCancel := context.WithCancel(ctx)
+	defer controllerCancel()
+	go adaptiveController(controllerCtx, adaptiveControllerConfig{
+		autoTune:   opts.AutoTune,
+		pool:       pool,
+		metrics:    metrics,
+		batchDelay: &batchDelay,
+	})
+
+	go func() {
+		defer close(jobs)
+		batch := make([]string, 0, defaultBatchSize)
+		for _, hostname := range hostnames {
 			if ctx.Err() != nil {
 				return
 			}
 
-			if opts.RateLimiter != nil {
-				if err := opts.RateLimiter.Acquire(ctx); err != nil {
+			batch = append(batch, hostname)
+			if len(batch) == defaultBatchSize {
+				if !dispatchBatch(ctx, jobs, batch, &batchDelay) {
 					return
 				}
+				batch = make([]string, 0, defaultBatchSize)
 			}
-
-			res, ok := queryHostname(ctx, client, server, j.hostname)
-			if ok {
-				results <- res
-			}
-			reporter.Increment()
 		}
-	}
 
-	for i := 0; i < workers; i++ {
-		wg.Add(1)
-		go queryFunc()
-	}
-
-	go func() {
-		defer close(jobs)
-		for _, hostname := range hostnames {
-			select {
-			case <-ctx.Done():
-				return
-			case jobs <- job{hostname: hostname}:
-			}
+		if len(batch) > 0 {
+			_ = dispatchBatch(ctx, jobs, batch, &batchDelay)
 		}
 	}()
 
 	go func() {
-		wg.Wait()
+		pool.Wait()
 		close(results)
+		close(metrics)
 	}()
 
 	var found []Result
@@ -267,13 +280,22 @@ func resolveServer(server string) (string, error) {
 	return net.JoinHostPort(cfg.Servers[0], port), nil
 }
 
-func queryHostname(ctx context.Context, client *dns.Client, server, hostname string) (Result, bool) {
+type queryMetric struct {
+	duration  time.Duration
+	success   bool
+	throttled bool
+}
+
+func queryHostname(ctx context.Context, client *dns.Client, server, hostname string) (Result, queryMetric, bool) {
 	msg := new(dns.Msg)
 	msg.SetQuestion(dns.Fqdn(hostname), dns.TypeA)
 
+	start := time.Now()
 	response, _, err := client.ExchangeContext(ctx, msg, server)
+	metric := queryMetric{duration: time.Since(start)}
 	if err != nil {
-		return Result{}, false
+		metric.throttled = isThrottleError(err)
+		return Result{}, metric, false
 	}
 
 	res := Result{
@@ -282,16 +304,345 @@ func queryHostname(ctx context.Context, client *dns.Client, server, hostname str
 	}
 
 	if response.Rcode != dns.RcodeSuccess {
-		return Result{}, false
+		metric.throttled = isThrottleRcode(response.Rcode)
+		return Result{}, metric, false
 	}
 
 	answers := extractAnswers(response)
 	if len(answers) == 0 {
-		return Result{}, false
+		return Result{}, metric, false
 	}
 
 	res.Answers = answers
-	return res, true
+	metric.success = true
+	return res, metric, true
+}
+
+func isThrottleError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	if ne, ok := err.(net.Error); ok {
+		if ne.Timeout() || ne.Temporary() {
+			return true
+		}
+	}
+	msg := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(msg, "rate"),
+		strings.Contains(msg, "throttle"),
+		strings.Contains(msg, "limit"),
+		strings.Contains(msg, "refused"),
+		strings.Contains(msg, "servfail"):
+		return true
+	}
+	return false
+}
+
+func isThrottleRcode(code int) bool {
+	switch code {
+	case dns.RcodeRefused, dns.RcodeServerFailure, dns.RcodeNotAuth, dns.RcodeNotZone:
+		return true
+	default:
+		return false
+	}
+}
+
+type workerPoolConfig struct {
+	server   string
+	timeout  time.Duration
+	limiter  *ratelimit.Limiter
+	jobs     <-chan []string
+	results  chan<- Result
+	metrics  chan<- queryMetric
+	reporter *progressReporter
+}
+
+type workerPool struct {
+	ctx     context.Context
+	cfg     workerPoolConfig
+	mu      sync.Mutex
+	cancels []context.CancelFunc
+	wg      sync.WaitGroup
+}
+
+func newWorkerPool(ctx context.Context, cfg workerPoolConfig) *workerPool {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return &workerPool{ctx: ctx, cfg: cfg}
+}
+
+func (p *workerPool) SetSize(target int) {
+	if target < 0 {
+		target = 0
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	current := len(p.cancels)
+	switch {
+	case target > current:
+		for i := current; i < target; i++ {
+			p.startWorkerLocked()
+		}
+	case target < current:
+		for current > target {
+			cancel := p.cancels[current-1]
+			cancel()
+			p.cancels = p.cancels[:current-1]
+			current--
+		}
+	}
+}
+
+func (p *workerPool) Size() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.cancels)
+}
+
+func (p *workerPool) Wait() {
+	p.wg.Wait()
+}
+
+func (p *workerPool) startWorkerLocked() {
+	workerCtx, cancel := context.WithCancel(p.ctx)
+	p.cancels = append(p.cancels, cancel)
+	p.wg.Add(1)
+	go p.runWorker(workerCtx)
+}
+
+func (p *workerPool) runWorker(ctx context.Context) {
+	defer p.wg.Done()
+
+	client := &dns.Client{Timeout: p.cfg.timeout}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-p.ctx.Done():
+			return
+		case batch, ok := <-p.cfg.jobs:
+			if !ok {
+				return
+			}
+			shouldStop := false
+			for _, hostname := range batch {
+				if shouldStop {
+					break
+				}
+				select {
+				case <-p.ctx.Done():
+					return
+				default:
+				}
+				if strings.TrimSpace(hostname) == "" {
+					if p.cfg.reporter != nil {
+						p.cfg.reporter.Increment()
+					}
+					continue
+				}
+				if p.cfg.limiter != nil {
+					if err := p.cfg.limiter.Acquire(p.ctx); err != nil {
+						return
+					}
+				}
+				res, metric, ok := queryHostname(p.ctx, client, p.cfg.server, hostname)
+				if p.cfg.metrics != nil {
+					select {
+					case p.cfg.metrics <- metric:
+					case <-ctx.Done():
+						return
+					case <-p.ctx.Done():
+						return
+					}
+				}
+				if ok {
+					select {
+					case p.cfg.results <- res:
+					case <-ctx.Done():
+						return
+					case <-p.ctx.Done():
+						return
+					}
+				}
+				if p.cfg.reporter != nil {
+					p.cfg.reporter.Increment()
+				}
+				select {
+				case <-ctx.Done():
+					shouldStop = true
+				default:
+				}
+			}
+			if shouldStop {
+				return
+			}
+		}
+	}
+}
+
+type adaptiveControllerConfig struct {
+	autoTune   bool
+	pool       *workerPool
+	metrics    <-chan queryMetric
+	batchDelay *atomic.Int64
+}
+
+func adaptiveController(ctx context.Context, cfg adaptiveControllerConfig) {
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	samples := make([]queryMetric, 0, 512)
+
+	apply := func() {
+		if len(samples) == 0 {
+			return
+		}
+
+		var (
+			totalDuration time.Duration
+			successCount  int
+			throttleCount int
+		)
+		for _, sample := range samples {
+			totalDuration += sample.duration
+			if sample.success {
+				successCount++
+			}
+			if sample.throttled {
+				throttleCount++
+			}
+		}
+
+		total := len(samples)
+		avgDuration := time.Duration(0)
+		if total > 0 {
+			avgDuration = totalDuration / time.Duration(total)
+		}
+		successRate := float64(successCount) / float64(max(1, total))
+		throttleRate := float64(throttleCount) / float64(max(1, total))
+
+		// backpressure control via batch delay adjustments
+		var desiredDelay time.Duration
+		switch {
+		case throttleRate > 0.15:
+			desiredDelay = 1500 * time.Millisecond
+		case throttleRate > 0.08 || avgDuration > 900*time.Millisecond:
+			desiredDelay = 750 * time.Millisecond
+		case throttleRate > 0 || avgDuration > 600*time.Millisecond:
+			desiredDelay = 250 * time.Millisecond
+		default:
+			desiredDelay = 0
+		}
+		if cfg.batchDelay != nil {
+			current := time.Duration(cfg.batchDelay.Load())
+			if current != desiredDelay {
+				cfg.batchDelay.Store(int64(desiredDelay))
+			}
+		}
+
+		if cfg.autoTune && cfg.pool != nil {
+			currentWorkers := cfg.pool.Size()
+			if currentWorkers == 0 {
+				currentWorkers = minAutoTuneWorkers
+			}
+			desiredWorkers := currentWorkers
+
+			switch {
+			case throttleRate > 0.1 || avgDuration > 900*time.Millisecond:
+				decrease := currentWorkers - max(5, currentWorkers/4)
+				if decrease < minAutoTuneWorkers {
+					decrease = minAutoTuneWorkers
+				}
+				desiredWorkers = decrease
+			case throttleRate == 0 && successRate > 0.9 && avgDuration < 400*time.Millisecond:
+				increase := currentWorkers + max(5, currentWorkers/5)
+				if increase > maxAutoTuneWorkers {
+					increase = maxAutoTuneWorkers
+				}
+				desiredWorkers = increase
+			}
+
+			if desiredWorkers != currentWorkers {
+				cfg.pool.SetSize(desiredWorkers)
+			}
+		}
+
+		samples = samples[:0]
+	}
+
+	ctxDone := ctx.Done()
+	for {
+		if ctxDone != nil {
+			select {
+			case <-ctxDone:
+				ctxDone = nil
+				cfg.autoTune = false
+				if cfg.batchDelay != nil {
+					cfg.batchDelay.Store(0)
+				}
+			default:
+			}
+		}
+
+		select {
+		case metric, ok := <-cfg.metrics:
+			if !ok {
+				apply()
+				return
+			}
+			samples = append(samples, metric)
+		case <-ticker.C:
+			apply()
+		}
+	}
+}
+
+func dispatchBatch(ctx context.Context, jobs chan<- []string, batch []string, delay *atomic.Int64) bool {
+	if len(batch) == 0 {
+		return true
+	}
+	payload := append([]string(nil), batch...)
+
+	for {
+		if ctx.Err() != nil {
+			return false
+		}
+
+		wait := time.Duration(0)
+		if delay != nil {
+			wait = time.Duration(delay.Load())
+		}
+		if wait > 0 {
+			timer := time.NewTimer(wait)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return false
+			case <-timer.C:
+			}
+		}
+
+		select {
+		case <-ctx.Done():
+			return false
+		case jobs <- payload:
+			return true
+		}
+	}
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 func extractAnswers(msg *dns.Msg) []string {
