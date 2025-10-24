@@ -75,13 +75,13 @@ tracking. Configure the exporter via:
 
 ```bash
 nitro --domain example.com \
-      --export-0xgen https://your-0xgen-hub.com/api/v1/import \
+      --export-0xgen https://hub.your-0xg3n.com/api/v1/import \
       --api-key $NITR0G3N_API_KEY
 ```
 
 The exporter batches subdomains in groups of 100 and automatically retries on
-recoverable HTTP errors. When `--export-0xgen` is omitted the integration is
-skipped.
+recoverable HTTP errors. Replace the host with your own deployed 0xg3n hub
+endpoint; when `--export-0xgen` is omitted the integration is skipped.
 
 ## Testing
 
