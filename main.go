@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/signal"
@@ -20,6 +21,7 @@ import (
 	"github.com/yourusername/nitr0g3n/config"
 	"github.com/yourusername/nitr0g3n/exporter/oxg3n"
 	"github.com/yourusername/nitr0g3n/filters"
+	"github.com/yourusername/nitr0g3n/logging"
 	"github.com/yourusername/nitr0g3n/netutil"
 	"github.com/yourusername/nitr0g3n/output"
 	"github.com/yourusername/nitr0g3n/passive"
@@ -30,6 +32,7 @@ import (
 	"github.com/yourusername/nitr0g3n/probe"
 	"github.com/yourusername/nitr0g3n/ratelimit"
 	"github.com/yourusername/nitr0g3n/resolver"
+	"github.com/yourusername/nitr0g3n/stats"
 )
 
 var cfg *config.Config
@@ -41,12 +44,44 @@ var rootCmd = &cobra.Command{
 	Long: `nitr0g3n is an extensible reconnaissance toolkit focused on domain intelligence.
 It provides active and passive discovery workflows to help analysts profile
 infrastructure quickly and accurately.`,
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(cmd *cobra.Command, args []string) (runErr error) {
 		ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
 
 		if err := cfg.Validate(); err != nil {
 			return err
+		}
+
+		levelName := cfg.LogLevel
+		if cfg.Verbose && !cmd.Flags().Changed("log-level") {
+			levelName = "debug"
+		}
+
+		level, err := logging.ParseLevel(levelName)
+		if err != nil {
+			return err
+		}
+
+		console := cmd.ErrOrStderr()
+		if cfg.Silent {
+			console = io.Discard
+		}
+
+		logger, err := logging.New(logging.Options{Level: level, Console: console, FilePath: cfg.LogFile})
+		if err != nil {
+			return err
+		}
+		defer logger.Close()
+
+		verboseEnabled := cfg.Verbose || level <= logging.LevelDebug
+
+		if !verboseEnabled && !cmd.Flags().Changed("domain") && !cmd.Flags().Changed("output") && !cmd.Flags().Changed("mode") && !cmd.Flags().Changed("format") {
+			return cmd.Help()
+		}
+
+		if cfg.Domain == "" {
+			logger.Warnf("No target domain specified. Use --domain to set a target or see --help for more details.")
+			return nil
 		}
 
 		limiter := ratelimit.New(cfg.RateLimit)
@@ -64,33 +99,33 @@ infrastructure quickly and accurately.`,
 			Domain:    cfg.Domain,
 			Client:    httpClient,
 			BatchSize: 100,
-			Logger:    cmd.ErrOrStderr(),
+			Logger:    logger.Writer(logging.LevelInfo),
 		})
 		if err != nil {
 			return err
 		}
 
-		if cfg.Verbose {
-			cmd.Println("Verbose output enabled")
-			cmd.Printf("Target domain: %s\n", cfg.Domain)
-			cmd.Printf("Mode: %s\n", cfg.Mode)
-			cmd.Printf("Output format: %s\n", cfg.Format)
-			if !cfg.LiveOutput() {
-				cmd.Printf("Results will be written to: %s\n", cfg.OutputPath)
-			} else {
-				cmd.Println("Live output enabled; results will be printed to stdout")
-			}
-		} else if !cmd.Flags().Changed("domain") && !cmd.Flags().Changed("output") && !cmd.Flags().Changed("mode") && !cmd.Flags().Changed("format") {
-			return cmd.Help()
+		logger.Infof("Enumerating domain %s using %s mode (format=%s)", cfg.Domain, cfg.Mode, cfg.Format)
+		if !cfg.LiveOutput() {
+			logger.Infof("Results will be written to %s", cfg.OutputPath)
+		} else {
+			logger.Infof("Live output enabled; results will be printed to stdout")
 		}
-
-		if cfg.Domain == "" {
-			cmd.Println("No target domain specified. Use --domain to set a target or see --help for more details.")
-			return nil
+		if cfg.LogFile != "" {
+			logger.Infof("File logging enabled: %s", cfg.LogFile)
 		}
 
 		subdomainSources := make(map[string][]string)
 		zoneRecords := make(map[string]map[string][]string)
+
+		tracker := stats.NewTracker(stats.Options{Logger: logger})
+		tracker.Start(ctx.Done())
+		defer func() {
+			snapshot := tracker.Stop()
+			if runErr == nil {
+				logScanSummary(logger, cfg, snapshot)
+			}
+		}()
 
 		if cfg.Mode == config.ModePassive || cfg.Mode == config.ModeAll {
 			passiveSources, err := buildPassiveSources(cfg, httpClient)
@@ -101,7 +136,7 @@ infrastructure quickly and accurately.`,
 			aggregation := passive.Aggregate(ctx, cfg.Domain, passiveSources)
 			if len(aggregation.Errors) > 0 {
 				for name, sourceErr := range aggregation.Errors {
-					cmd.PrintErrf("passive source %s error: %v\n", name, sourceErr)
+					logger.Warnf("Passive source %s error: %v", name, sourceErr)
 				}
 			}
 
@@ -117,8 +152,8 @@ infrastructure quickly and accurately.`,
 				Domain:      cfg.Domain,
 				DNSServer:   cfg.DNSServer,
 				Timeout:     cfg.Timeout,
-				Verbose:     cfg.Verbose,
-				LogWriter:   cmd.ErrOrStderr(),
+				Verbose:     verboseEnabled,
+				LogWriter:   logger.Writer(logging.LevelDebug),
 				RateLimiter: limiter,
 			}
 
@@ -134,6 +169,8 @@ infrastructure quickly and accurately.`,
 				mergeZoneRecords(zoneRecords, transfer.Records)
 			}
 
+			progressWriter := logger.ConsoleWriter()
+
 			opts := bruteforce.Options{
 				Domain:         cfg.Domain,
 				WordlistPath:   cfg.WordlistPath,
@@ -141,7 +178,7 @@ infrastructure quickly and accurately.`,
 				DNSServer:      cfg.DNSServer,
 				Timeout:        cfg.DNSTimeout,
 				Workers:        cfg.Threads,
-				ProgressWriter: cmd.ErrOrStderr(),
+				ProgressWriter: progressWriter,
 				RateLimiter:    limiter,
 			}
 
@@ -156,6 +193,7 @@ infrastructure quickly and accurately.`,
 		}
 
 		if len(subdomainSources) == 0 {
+			logger.Infof("No subdomains discovered for %s", cfg.Domain)
 			return nil
 		}
 
@@ -181,11 +219,11 @@ infrastructure quickly and accurately.`,
 		if cfg.FilterWildcards {
 			profile, err := filters.DetectWildcard(ctx, dnsResolver, cfg.Domain, 3)
 			if err != nil {
-				cmd.PrintErrf("wildcard detection error: %v\n", err)
+				logger.Warnf("Wildcard detection error: %v", err)
 			} else {
 				wildcardProfile = profile
-				if cfg.Verbose && wildcardProfile.Active() {
-					cmd.Println("Wildcard DNS detected; filtering matching results")
+				if wildcardProfile.Active() {
+					logger.Infof("Wildcard DNS detected; matching resolutions will be filtered")
 				}
 			}
 		}
@@ -206,14 +244,18 @@ infrastructure quickly and accurately.`,
 				continue
 			}
 
+			sources := append([]string(nil), subdomainSources[subdomain]...)
+			mergedIPs, mergedRecords := mergeResolution(resolution, zoneRecords[subdomain])
+			resolved := len(mergedIPs) > 0 || len(mergedRecords) > 0
+			tracker.RecordAttempt(resolved)
+
 			if cfg.FilterWildcards && wildcardProfile.Active() && wildcardProfile.Matches(resolution) {
-				if cfg.Verbose {
-					cmd.Printf("Skipping wildcard subdomain: %s\n", subdomain)
+				if verboseEnabled {
+					logger.Debugf("Skipping wildcard subdomain: %s", subdomain)
 				}
 				continue
 			}
 
-			mergedIPs, mergedRecords := mergeResolution(resolution, zoneRecords[subdomain])
 			if !cfg.ShowAll && len(mergedIPs) == 0 && len(mergedRecords) == 0 {
 				delete(subdomainSources, subdomain)
 				delete(zoneRecords, subdomain)
@@ -221,12 +263,12 @@ infrastructure quickly and accurately.`,
 			}
 
 			if resolution.Err != nil {
-				cmd.PrintErrf("dns resolution %s error: %v\n", subdomain, resolution.Err)
+				logger.Warnf("DNS resolution %s error: %v", subdomain, resolution.Err)
 			}
 
 			if cfg.FilterWildcards && filters.IsCDNResponse(mergedRecords) {
-				if cfg.Verbose {
-					cmd.Printf("Skipping CDN-derived subdomain: %s\n", subdomain)
+				if verboseEnabled {
+					logger.Debugf("Skipping CDN-derived subdomain: %s", subdomain)
 				}
 				delete(subdomainSources, subdomain)
 				delete(zoneRecords, subdomain)
@@ -234,6 +276,9 @@ infrastructure quickly and accurately.`,
 			}
 
 			if len(cfg.Scope) > 0 && !matchesScope(subdomain, cfg.Scope) {
+				if verboseEnabled {
+					logger.Debugf("Skipping subdomain outside scope: %s", subdomain)
+				}
 				delete(subdomainSources, subdomain)
 				delete(zoneRecords, subdomain)
 				continue
@@ -250,7 +295,7 @@ infrastructure quickly and accurately.`,
 
 			record := output.Record{
 				Subdomain:   subdomain,
-				Source:      strings.Join(subdomainSources[subdomain], ","),
+				Source:      strings.Join(sources, ","),
 				IPAddresses: mergedIPs,
 				DNSRecords:  mergedRecords,
 			}
@@ -264,6 +309,8 @@ infrastructure quickly and accurately.`,
 			if err := writer.WriteRecord(record); err != nil {
 				return fmt.Errorf("writing record: %w", err)
 			}
+
+			tracker.RecordDiscovery(sources)
 
 			if exporter != nil {
 				if err := exporter.AddRecord(ctx, record); err != nil {
@@ -284,9 +331,9 @@ infrastructure quickly and accurately.`,
 				return fmt.Errorf("finalising 0xg3n export: %w", err)
 			}
 			if summary.TotalRecords > 0 || summary.BatchesSent > 0 {
-				cmd.Printf("0xg3n export complete: %d record(s) across %d batch(es)\n", summary.TotalRecords, summary.BatchesSent)
+				logger.Infof("0xg3n export complete: %d record(s) across %d batch(es)", summary.TotalRecords, summary.BatchesSent)
 			} else {
-				cmd.Println("0xg3n export complete: no records to send")
+				logger.Infof("0xg3n export complete: no records to send")
 			}
 		}
 
@@ -300,6 +347,41 @@ infrastructure quickly and accurately.`,
 
 func init() {
 	cfg = config.BindFlags(rootCmd)
+}
+
+func logScanSummary(logger *logging.Logger, cfg *config.Config, snapshot stats.Snapshot) {
+	if logger == nil || cfg == nil {
+		return
+	}
+
+	duration := snapshot.Duration
+	durationStr := "<1s"
+	if duration > 0 {
+		rounded := duration.Truncate(time.Second)
+		if rounded == 0 {
+			rounded = duration
+		}
+		durationStr = rounded.String()
+	}
+
+	unresolved := snapshot.Attempts - snapshot.Resolved
+	if unresolved < 0 {
+		unresolved = 0
+	}
+
+	logger.Infof("Scan complete for %s: %d subdomains discovered (%d resolved, %d unresolved)", cfg.Domain, snapshot.TotalFound, snapshot.Resolved, unresolved)
+	logger.Infof("Resolution attempts: %d total (success rate %.1f%%) across %s", snapshot.Attempts, snapshot.ResolutionRate(), durationStr)
+	logger.Infof("Active/passive discovery ratio: %s", snapshot.ActivePassiveRatio())
+
+	if breakdown := stats.FormatSourceBreakdown(snapshot.Sources, 5); breakdown != "" {
+		logger.Infof("Top discovery sources: %s", breakdown)
+	}
+
+	if cfg.LiveOutput() {
+		logger.Infof("Results streamed to stdout using %s format", cfg.Format)
+	} else if cfg.OutputPath != "" {
+		logger.Infof("Results saved to %s", cfg.OutputPath)
+	}
 }
 
 func buildPassiveSources(cfg *config.Config, httpClient *http.Client) ([]passive.Source, error) {

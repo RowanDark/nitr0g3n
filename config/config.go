@@ -32,6 +32,9 @@ type Config struct {
 	Mode         string
 	OutputPath   string
 	Verbose      bool
+	Silent       bool
+	LogLevel     string
+	LogFile      string
 	Format       Format
 	Sources      []string
 	Threads      int
@@ -64,6 +67,9 @@ func BindFlags(cmd *cobra.Command) *Config {
 	flags.StringVarP(&cfg.Mode, "mode", "m", string(ModePassive), "Enumeration mode to use (active, passive, or all)")
 	flags.StringVarP(&cfg.OutputPath, "output", "o", "", "Optional file path to write results")
 	flags.BoolVarP(&cfg.Verbose, "verbose", "v", false, "Enable verbose logging output")
+	flags.BoolVar(&cfg.Silent, "silent", false, "Suppress non-essential console output (only emit final results)")
+	flags.StringVar(&cfg.LogLevel, "log-level", "info", "Logging level (debug, info, warn, error)")
+	flags.StringVar(&cfg.LogFile, "log-file", "", "Optional file path to append structured logs")
 	flags.StringVar((*string)(&cfg.Format), "format", string(FormatJSON), "Output format (json, csv, txt)")
 	flags.StringSliceVar(&cfg.Sources, "sources", nil, "Comma-separated list of passive sources to query")
 	flags.IntVar(&cfg.Threads, "threads", 50, "Number of concurrent DNS resolution workers")
@@ -91,6 +97,9 @@ func (c *Config) Validate() error {
 	if c.Mode == "" {
 		c.Mode = string(ModePassive)
 	}
+
+	c.LogLevel = strings.ToLower(strings.TrimSpace(c.LogLevel))
+	c.LogFile = strings.TrimSpace(c.LogFile)
 
 	switch c.Mode {
 	case ModeActive, ModePassive, ModeAll:
@@ -160,6 +169,10 @@ func (c *Config) Validate() error {
 
 	if c.DNSTimeout <= 0 {
 		c.DNSTimeout = c.Timeout
+	}
+
+	if c.Silent && c.Verbose {
+		return fmt.Errorf("--silent cannot be combined with --verbose")
 	}
 
 	return nil
