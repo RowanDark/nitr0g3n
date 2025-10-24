@@ -23,13 +23,18 @@ type Record struct {
 	Timestamp    string              `json:"timestamp"`
 	DNSRecords   map[string][]string `json:"dns_records"`
 	HTTPServices []HTTPService       `json:"http,omitempty"`
+	Change       string              `json:"change,omitempty"`
 }
 
 // HTTPService captures the result of probing a single scheme/URL.
 type HTTPService struct {
-	URL        string `json:"url"`
-	StatusCode int    `json:"status_code"`
-	Error      string `json:"error,omitempty"`
+	URL            string `json:"url"`
+	StatusCode     int    `json:"status_code"`
+	Error          string `json:"error,omitempty"`
+	Banner         string `json:"banner,omitempty"`
+	Title          string `json:"title,omitempty"`
+	ScreenshotPath string `json:"screenshot,omitempty"`
+	Snippet        string `json:"snippet,omitempty"`
 }
 
 // Writer serialises discovery records to stdout or a file in a configured format.
@@ -72,6 +77,9 @@ func NewWriter(cfg *config.Config) (*Writer, error) {
 	case config.FormatJSON:
 		writer.encoder = json.NewEncoder(dest)
 		writer.encoder.SetEscapeHTML(false)
+		if cfg.JSONPretty {
+			writer.encoder.SetIndent("", "  ")
+		}
 	case config.FormatCSV:
 		writer.csvWriter = csv.NewWriter(dest)
 	case config.FormatTXT:
@@ -117,7 +125,7 @@ func (w *Writer) writeCSVRecord(record Record) error {
 	}
 
 	if !w.csvHeaderSent {
-		header := []string{"subdomain", "ip_addresses", "source", "timestamp", "dns_records", "http_services"}
+		header := []string{"subdomain", "ip_addresses", "source", "timestamp", "dns_records", "http_services", "change"}
 		if err := w.csvWriter.Write(header); err != nil {
 			return err
 		}
@@ -132,6 +140,7 @@ func (w *Writer) writeCSVRecord(record Record) error {
 		record.Timestamp,
 		dns,
 		flattenHTTPServices(record.HTTPServices),
+		record.Change,
 	}
 
 	if err := w.csvWriter.Write(row); err != nil {
@@ -150,6 +159,9 @@ func (w *Writer) writeTXTRecord(record Record) error {
 	builder.WriteString(fmt.Sprintf("Subdomain: %s\n", record.Subdomain))
 	builder.WriteString(fmt.Sprintf("Source: %s\n", record.Source))
 	builder.WriteString(fmt.Sprintf("Timestamp: %s\n", record.Timestamp))
+	if record.Change != "" {
+		builder.WriteString(fmt.Sprintf("Change: %s\n", record.Change))
+	}
 
 	if len(record.IPAddresses) > 0 {
 		builder.WriteString(fmt.Sprintf("IP Addresses: %s\n", strings.Join(record.IPAddresses, ", ")))
@@ -170,11 +182,26 @@ func (w *Writer) writeTXTRecord(record Record) error {
 	if len(record.HTTPServices) > 0 {
 		builder.WriteString("HTTP Services:\n")
 		for _, svc := range record.HTTPServices {
-			if svc.Error != "" {
-				builder.WriteString(fmt.Sprintf("  %s -> error: %s\n", svc.URL, svc.Error))
-				continue
+			builder.WriteString(fmt.Sprintf("  %s", svc.URL))
+			if svc.StatusCode > 0 {
+				builder.WriteString(fmt.Sprintf(" -> %d", svc.StatusCode))
 			}
-			builder.WriteString(fmt.Sprintf("  %s -> %d\n", svc.URL, svc.StatusCode))
+			if svc.Error != "" {
+				builder.WriteString(fmt.Sprintf(" (error: %s)", svc.Error))
+			}
+			if svc.Banner != "" {
+				builder.WriteString(fmt.Sprintf(" [banner: %s]", svc.Banner))
+			}
+			if svc.Title != "" {
+				builder.WriteString(fmt.Sprintf(" [title: %s]", svc.Title))
+			}
+			if svc.ScreenshotPath != "" {
+				builder.WriteString(fmt.Sprintf(" [screenshot: %s]", svc.ScreenshotPath))
+			}
+			if svc.Snippet != "" {
+				builder.WriteString(fmt.Sprintf(" [snippet: %s]", svc.Snippet))
+			}
+			builder.WriteString("\n")
 		}
 	}
 
@@ -220,11 +247,31 @@ func flattenHTTPServices(services []HTTPService) string {
 
 	parts := make([]string, 0, len(services))
 	for _, service := range services {
-		if service.Error != "" {
-			parts = append(parts, fmt.Sprintf("%s:error=%s", service.URL, service.Error))
-			continue
+		meta := make([]string, 0, 5)
+		if service.StatusCode > 0 {
+			meta = append(meta, fmt.Sprintf("status=%d", service.StatusCode))
 		}
-		parts = append(parts, fmt.Sprintf("%s:%d", service.URL, service.StatusCode))
+		if service.Error != "" {
+			meta = append(meta, fmt.Sprintf("error=%s", service.Error))
+		}
+		if service.Banner != "" {
+			meta = append(meta, fmt.Sprintf("banner=%s", service.Banner))
+		}
+		if service.Title != "" {
+			meta = append(meta, fmt.Sprintf("title=%s", service.Title))
+		}
+		if service.ScreenshotPath != "" {
+			meta = append(meta, fmt.Sprintf("screenshot=%s", service.ScreenshotPath))
+		}
+		if service.Snippet != "" {
+			meta = append(meta, fmt.Sprintf("snippet=%s", service.Snippet))
+		}
+
+		entry := service.URL
+		if len(meta) > 0 {
+			entry = fmt.Sprintf("%s(%s)", entry, strings.Join(meta, ";"))
+		}
+		parts = append(parts, entry)
 	}
 
 	return strings.Join(parts, "|")

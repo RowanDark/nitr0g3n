@@ -97,6 +97,30 @@ infrastructure quickly and accurately.`,
 		}
 		defer writer.Close()
 
+		var (
+			diffBaseline  map[string]output.Record
+			diffRemaining map[string]output.Record
+			diffStats     diffSummary
+		)
+		if cfg.DiffPath != "" {
+			previous, err := output.LoadRecords(cfg.DiffPath)
+			if err != nil {
+				logger.Warnf("Unable to load diff baseline %s: %v", cfg.DiffPath, err)
+			} else {
+				diffBaseline = make(map[string]output.Record, len(previous))
+				diffRemaining = make(map[string]output.Record, len(previous))
+				for _, rec := range previous {
+					normalized := normalizeDiffRecord(rec)
+					if normalized.Subdomain == "" {
+						continue
+					}
+					diffBaseline[normalized.Subdomain] = normalized
+					diffRemaining[normalized.Subdomain] = normalized
+				}
+				logger.Infof("Loaded %d baseline record(s) from %s", len(diffBaseline), cfg.DiffPath)
+			}
+		}
+
 		exporter, err := oxg3n.NewExporter(oxg3n.Options{
 			Endpoint:  cfg.Export0xGenEndpoint,
 			APIKey:    cfg.APIKey,
@@ -234,7 +258,7 @@ infrastructure quickly and accurately.`,
 
 		var probeClient *probe.Client
 		if cfg.ProbeHTTP {
-			probeClient = probe.NewClient(probe.Options{Timeout: cfg.Timeout, HTTPClient: netutil.NewHTTPClient(cfg.Timeout, limiter)})
+			probeClient = probe.NewClient(probe.Options{Timeout: cfg.Timeout, HTTPClient: netutil.NewHTTPClient(cfg.Timeout, limiter), ScreenshotDir: cfg.ScreenshotDir})
 		}
 
 		seenIPs := make(map[string]struct{})
@@ -310,6 +334,22 @@ infrastructure quickly and accurately.`,
 				record.Timestamp = time.Now().UTC().Format(time.RFC3339)
 			}
 
+			if diffBaseline != nil {
+				normalized := normalizeDiffRecord(record)
+				if normalized.Subdomain != "" {
+					if prev, ok := diffBaseline[normalized.Subdomain]; ok {
+						if !diffRecordsEqual(prev, normalized) {
+							record.Change = "updated"
+							diffStats.updated++
+						}
+						delete(diffRemaining, normalized.Subdomain)
+					} else {
+						record.Change = "new"
+						diffStats.added++
+					}
+				}
+			}
+
 			if err := writer.WriteRecord(record); err != nil {
 				return fmt.Errorf("writing record: %w", err)
 			}
@@ -338,6 +378,29 @@ infrastructure quickly and accurately.`,
 				logger.Infof("0xg3n export complete: %d record(s) across %d batch(es)", summary.TotalRecords, summary.BatchesSent)
 			} else {
 				logger.Infof("0xg3n export complete: no records to send")
+			}
+		}
+
+		if diffBaseline != nil {
+			if remaining := len(diffRemaining); remaining > 0 {
+				diffStats.removed = make([]string, 0, remaining)
+				for subdomain := range diffRemaining {
+					diffStats.removed = append(diffStats.removed, subdomain)
+				}
+				sort.Strings(diffStats.removed)
+				diffStats.removedCount = remaining
+			}
+
+			logger.Infof("Diff summary: %d new, %d updated, %d removed compared to %s", diffStats.added, diffStats.updated, diffStats.removedCount, cfg.DiffPath)
+			if diffStats.removedCount > 0 {
+				preview := diffStats.removed
+				if len(preview) > 10 {
+					preview = preview[:10]
+				}
+				logger.Infof("Removed subdomains: %s", strings.Join(preview, ", "))
+				if diffStats.removedCount > len(preview) {
+					logger.Infof("Removed subdomains truncated; %d additional entries omitted", diffStats.removedCount-len(preview))
+				}
 			}
 		}
 
@@ -655,6 +718,115 @@ func filterUniqueIPs(ips []string, records map[string][]string, seen map[string]
 	}
 
 	return filtered, records
+}
+
+type diffSummary struct {
+	added        int
+	updated      int
+	removed      []string
+	removedCount int
+}
+
+func normalizeDiffRecord(rec output.Record) output.Record {
+	normalized := output.Record{}
+	normalized.Subdomain = strings.ToLower(strings.TrimSpace(rec.Subdomain))
+	normalized.Source = normalizeSources(rec.Source)
+	normalized.IPAddresses = dedupeSortedStrings(rec.IPAddresses)
+
+	if len(rec.DNSRecords) > 0 {
+		normalized.DNSRecords = make(map[string][]string, len(rec.DNSRecords))
+		for recordType, values := range rec.DNSRecords {
+			recordType = strings.ToUpper(strings.TrimSpace(recordType))
+			normalized.DNSRecords[recordType] = dedupeSortedStrings(values)
+		}
+	}
+
+	if len(rec.HTTPServices) > 0 {
+		services := make([]output.HTTPService, 0, len(rec.HTTPServices))
+		for _, svc := range rec.HTTPServices {
+			normalizedService := output.HTTPService{
+				URL:        strings.ToLower(strings.TrimSpace(svc.URL)),
+				StatusCode: svc.StatusCode,
+				Error:      strings.TrimSpace(svc.Error),
+				Banner:     strings.TrimSpace(svc.Banner),
+				Title:      strings.TrimSpace(svc.Title),
+				Snippet:    strings.TrimSpace(svc.Snippet),
+			}
+			services = append(services, normalizedService)
+		}
+		sort.Slice(services, func(i, j int) bool {
+			if services[i].URL == services[j].URL {
+				return services[i].StatusCode < services[j].StatusCode
+			}
+			return services[i].URL < services[j].URL
+		})
+		normalized.HTTPServices = services
+	}
+
+	return normalized
+}
+
+func normalizeSources(source string) string {
+	if strings.TrimSpace(source) == "" {
+		return ""
+	}
+	parts := strings.Split(source, ",")
+	normalized := dedupeSortedStrings(parts)
+	return strings.Join(normalized, ",")
+}
+
+func diffRecordsEqual(a, b output.Record) bool {
+	normalizedA := normalizeDiffRecord(a)
+	normalizedB := normalizeDiffRecord(b)
+
+	if normalizedA.Subdomain != normalizedB.Subdomain {
+		return false
+	}
+	if normalizedA.Source != normalizedB.Source {
+		return false
+	}
+	if !equalStringSlices(normalizedA.IPAddresses, normalizedB.IPAddresses) {
+		return false
+	}
+	if len(normalizedA.DNSRecords) != len(normalizedB.DNSRecords) {
+		return false
+	}
+	for recordType, values := range normalizedA.DNSRecords {
+		other, ok := normalizedB.DNSRecords[recordType]
+		if !ok || !equalStringSlices(values, other) {
+			return false
+		}
+	}
+	if len(normalizedA.HTTPServices) != len(normalizedB.HTTPServices) {
+		return false
+	}
+	for i := range normalizedA.HTTPServices {
+		if !httpServicesEqual(normalizedA.HTTPServices[i], normalizedB.HTTPServices[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func httpServicesEqual(a, b output.HTTPService) bool {
+	return a.URL == b.URL &&
+		a.StatusCode == b.StatusCode &&
+		a.Error == b.Error &&
+		a.Banner == b.Banner &&
+		a.Title == b.Title &&
+		a.Snippet == b.Snippet
+}
+
+func equalStringSlices(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func main() {

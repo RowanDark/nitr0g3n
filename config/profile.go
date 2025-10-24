@@ -24,11 +24,13 @@ type profileSettings struct {
 	Domain              *string        `yaml:"domain"`
 	Mode                *string        `yaml:"mode"`
 	OutputPath          *string        `yaml:"output"`
+	DiffPath            *string        `yaml:"diff"`
 	Verbose             *bool          `yaml:"verbose"`
 	Silent              *bool          `yaml:"silent"`
 	LogLevel            *string        `yaml:"log_level"`
 	LogFile             *string        `yaml:"log_file"`
 	Format              *string        `yaml:"format"`
+	JSONPretty          *bool          `yaml:"json_pretty"`
 	Sources             *StringSlice   `yaml:"sources"`
 	Threads             *int           `yaml:"threads"`
 	DNSServer           *string        `yaml:"dns_server"`
@@ -42,6 +44,7 @@ type profileSettings struct {
 	Scope               *StringSlice   `yaml:"scope"`
 	UniqueIPs           *bool          `yaml:"unique_ips"`
 	ProbeHTTP           *bool          `yaml:"probe"`
+	ScreenshotDir       *string        `yaml:"screenshot_dir"`
 	Export0xGenEndpoint *string        `yaml:"export_0xgen"`
 	APIKey              *string        `yaml:"api_key"`
 	RateLimit           *float64       `yaml:"rate_limit"`
@@ -157,6 +160,9 @@ func applyProfileSettings(cfg *Config, profile *profileSettings, cmd *cobra.Comm
 	if profile.OutputPath != nil && !flagChanged(flags, "output") {
 		cfg.OutputPath = strings.TrimSpace(*profile.OutputPath)
 	}
+	if profile.DiffPath != nil && !flagChanged(flags, "diff") {
+		cfg.DiffPath = strings.TrimSpace(*profile.DiffPath)
+	}
 	if profile.Verbose != nil && !flagChanged(flags, "verbose") {
 		cfg.Verbose = *profile.Verbose
 	}
@@ -171,6 +177,9 @@ func applyProfileSettings(cfg *Config, profile *profileSettings, cmd *cobra.Comm
 	}
 	if profile.Format != nil && !flagChanged(flags, "format") {
 		cfg.Format = Format(strings.TrimSpace(*profile.Format))
+	}
+	if profile.JSONPretty != nil && !flagChanged(flags, "json-pretty") {
+		cfg.JSONPretty = *profile.JSONPretty
 	}
 	if profile.Sources != nil && !flagChanged(flags, "sources") {
 		cfg.Sources = profile.Sources.ToSlice()
@@ -210,6 +219,9 @@ func applyProfileSettings(cfg *Config, profile *profileSettings, cmd *cobra.Comm
 	}
 	if profile.ProbeHTTP != nil && !flagChanged(flags, "probe") {
 		cfg.ProbeHTTP = *profile.ProbeHTTP
+	}
+	if profile.ScreenshotDir != nil && !flagChanged(flags, "screenshot-dir") {
+		cfg.ScreenshotDir = strings.TrimSpace(*profile.ScreenshotDir)
 	}
 	if profile.Export0xGenEndpoint != nil && !flagChanged(flags, "export-0xgen") {
 		cfg.Export0xGenEndpoint = strings.TrimSpace(*profile.Export0xGenEndpoint)

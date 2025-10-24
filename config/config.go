@@ -31,6 +31,7 @@ type Config struct {
 	Domain       string
 	Mode         string
 	OutputPath   string
+	DiffPath     string
 	Verbose      bool
 	Silent       bool
 	ConfigPath   string
@@ -38,6 +39,7 @@ type Config struct {
 	LogLevel     string
 	LogFile      string
 	Format       Format
+	JSONPretty   bool
 	Sources      []string
 	Threads      int
 	DNSServer    string
@@ -52,6 +54,7 @@ type Config struct {
 	Scope            []string
 	UniqueIPs        bool
 	ProbeHTTP        bool
+	ScreenshotDir    string
 
 	Export0xGenEndpoint string
 	APIKey              string
@@ -68,11 +71,13 @@ func BindFlags(cmd *cobra.Command) *Config {
 	flags.StringVarP(&cfg.Domain, "domain", "d", "", "Target domain to investigate")
 	flags.StringVarP(&cfg.Mode, "mode", "m", string(ModePassive), "Enumeration mode to use (active, passive, or all)")
 	flags.StringVarP(&cfg.OutputPath, "output", "o", "", "Optional file path to write results")
+	flags.StringVar(&cfg.DiffPath, "diff", "", "Optional path to a previous results file to diff against")
 	flags.BoolVarP(&cfg.Verbose, "verbose", "v", false, "Enable verbose logging output")
 	flags.BoolVar(&cfg.Silent, "silent", false, "Suppress non-essential console output (only emit final results)")
 	flags.StringVar(&cfg.LogLevel, "log-level", "info", "Logging level (debug, info, warn, error)")
 	flags.StringVar(&cfg.LogFile, "log-file", "", "Optional file path to append structured logs")
 	flags.StringVar((*string)(&cfg.Format), "format", string(FormatJSON), "Output format (json, csv, txt)")
+	flags.BoolVar(&cfg.JSONPretty, "json-pretty", false, "Pretty-print JSON output with indentation")
 	flags.StringSliceVar(&cfg.Sources, "sources", nil, "Comma-separated list of passive sources to query")
 	flags.IntVar(&cfg.Threads, "threads", 50, "Number of concurrent DNS resolution workers")
 	flags.StringVar(&cfg.ConfigPath, "config", "", "Path to a YAML configuration file (defaults to .nitr0gen.yaml if present)")
@@ -87,6 +92,7 @@ func BindFlags(cmd *cobra.Command) *Config {
 	flags.StringSliceVar(&cfg.Scope, "scope", nil, "Restrict output to subdomains matching the provided glob patterns or TLD suffixes")
 	flags.BoolVar(&cfg.UniqueIPs, "unique-ips", false, "Only output subdomains that resolve to new unique IP addresses")
 	flags.BoolVar(&cfg.ProbeHTTP, "probe", false, "Probe discovered subdomains over HTTP and HTTPS to capture status codes")
+	flags.StringVar(&cfg.ScreenshotDir, "screenshot-dir", "", "Directory to store probe screenshots (defaults to ./screenshots)")
 	flags.StringVar(&cfg.Export0xGenEndpoint, "export-0xgen", "", "0xg3n hub API endpoint to export discovered subdomains")
 	flags.StringVar(&cfg.APIKey, "api-key", "", "API key used for authenticated exports (falls back to NITR0G3N_API_KEY env var)")
 	flags.Float64Var(&cfg.RateLimit, "rate-limit", 0, "Maximum number of outbound requests per second (0 for unlimited)")
@@ -157,8 +163,10 @@ func (c *Config) Validate() error {
 		c.APIKey = strings.TrimSpace(os.Getenv("NITR0G3N_API_KEY"))
 	}
 
+	c.DiffPath = strings.TrimSpace(c.DiffPath)
 	c.Export0xGenEndpoint = strings.TrimSpace(c.Export0xGenEndpoint)
 	c.APIKey = strings.TrimSpace(c.APIKey)
+	c.ScreenshotDir = strings.TrimSpace(c.ScreenshotDir)
 
 	if c.Threads <= 0 {
 		c.Threads = 50
@@ -177,6 +185,10 @@ func (c *Config) Validate() error {
 
 	if c.Silent && c.Verbose {
 		return fmt.Errorf("--silent cannot be combined with --verbose")
+	}
+
+	if c.ProbeHTTP && c.ScreenshotDir == "" {
+		c.ScreenshotDir = "screenshots"
 	}
 
 	return nil
