@@ -37,6 +37,12 @@ import (
 	"github.com/yourusername/nitr0g3n/stats"
 )
 
+var (
+	version = "dev"
+	commit  = "unknown"
+	date    = "unknown"
+)
+
 var cfg *config.Config
 
 var rootCmd = &cobra.Command{
@@ -47,6 +53,17 @@ var rootCmd = &cobra.Command{
 It provides active and passive discovery workflows to help analysts profile
 infrastructure quickly and accurately.`,
 	RunE: func(cmd *cobra.Command, args []string) (runErr error) {
+		showVersion, err := cmd.Flags().GetBool("version")
+		if err != nil {
+			return err
+		}
+		if showVersion {
+			fmt.Fprintf(cmd.OutOrStdout(), "nitr0g3n version: %s\n", version)
+			fmt.Fprintf(cmd.OutOrStdout(), "commit: %s\n", commit)
+			fmt.Fprintf(cmd.OutOrStdout(), "built: %s\n", date)
+			return nil
+		}
+
 		ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
 
@@ -132,6 +149,7 @@ infrastructure quickly and accurately.`,
 
 func init() {
 	cfg = config.BindFlags(rootCmd)
+	rootCmd.PersistentFlags().BoolP("version", "V", false, "Show nitr0g3n version information and exit")
 }
 
 func gatherTargets(input io.Reader, domain string) ([]string, error) {
