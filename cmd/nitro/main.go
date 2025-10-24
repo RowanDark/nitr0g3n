@@ -197,6 +197,13 @@ func readTargetsFromStdin(r io.Reader) ([]string, error) {
 
 func runDomain(ctx context.Context, cfg *config.Config, logger *logging.Logger, writer *output.Writer, verboseEnabled bool) error {
 	limiter := ratelimit.New(cfg.RateLimit)
+	monitorCancel := func() {}
+	if limiter != nil {
+		monitorCtx, cancel := context.WithCancel(ctx)
+		monitorCancel = cancel
+		startRateLimitMonitor(monitorCtx, limiter, logger)
+	}
+	defer monitorCancel()
 	httpClient := netutil.NewHTTPClient(cfg.Timeout, limiter)
 
 	notifier, err := webhook.New(webhook.Options{
@@ -757,6 +764,66 @@ func addSource(m map[string][]string, subdomain, source string) {
 	existing = append(existing, source)
 	sort.Strings(existing)
 	m[subdomain] = existing
+}
+
+func startRateLimitMonitor(ctx context.Context, limiter *ratelimit.Limiter, logger *logging.Logger) {
+	if limiter == nil || logger == nil {
+		return
+	}
+
+	status := limiter.Status()
+	if status.Rate <= 0 {
+		return
+	}
+
+	logger.Infof("Rate limit configured: %.2f req/s (bucket capacity %.2f token(s))", status.Rate, status.Capacity)
+
+	ticker := time.NewTicker(5 * time.Second)
+
+	go func() {
+		defer ticker.Stop()
+		warned := false
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				snapshot := limiter.Status()
+				percentUsed := snapshot.Utilization * 100
+				if percentUsed < 0 {
+					percentUsed = 0
+				}
+				if percentUsed > 100 {
+					percentUsed = 100
+				}
+
+				logger.Infof("Rate limit status: %.2f req/s | %.2f token(s) remaining (%.0f%% used, refill in %s)", snapshot.Rate, snapshot.Remaining, percentUsed, formatRefillDuration(snapshot.RefillIn))
+
+				if snapshot.Capacity > 0 && snapshot.Remaining <= snapshot.Capacity*0.2 {
+					if !warned {
+						logger.Warnf("Approaching rate limit capacity: %.2f token(s) remaining (<=20%% of bucket)", snapshot.Remaining)
+						warned = true
+					}
+				} else if warned && snapshot.Remaining > snapshot.Capacity*0.4 {
+					warned = false
+				}
+			}
+		}
+	}()
+}
+
+func formatRefillDuration(d time.Duration) string {
+	if d <= 0 {
+		return "ready"
+	}
+	if d < time.Millisecond {
+		return "<1ms"
+	}
+	if d < time.Second {
+		return d.Round(time.Millisecond).String()
+	}
+	return d.Round(100 * time.Millisecond).String()
 }
 
 func mergeZoneRecords(target map[string]map[string][]string, incoming map[string]map[string][]string) {

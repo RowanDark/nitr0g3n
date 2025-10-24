@@ -15,6 +15,15 @@ type Limiter struct {
 	mu       sync.Mutex
 }
 
+// Status describes the current utilisation state of a Limiter.
+type Status struct {
+	Rate        float64
+	Capacity    float64
+	Remaining   float64
+	Utilization float64
+	RefillIn    time.Duration
+}
+
 func New(rate float64) *Limiter {
 	if rate <= 0 {
 		return nil
@@ -100,4 +109,51 @@ func (l *Limiter) refillLocked(now time.Time) {
 		l.tokens = l.capacity
 	}
 	l.lastFill = now
+}
+
+// Status returns information about the limiter's current token bucket state.
+func (l *Limiter) Status() Status {
+	if l == nil {
+		return Status{}
+	}
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	now := time.Now()
+	l.refillLocked(now)
+
+	remaining := l.tokens
+	used := l.capacity - remaining
+	if used < 0 {
+		used = 0
+	}
+
+	utilization := 0.0
+	if l.capacity > 0 {
+		utilization = used / l.capacity
+		if utilization < 0 {
+			utilization = 0
+		}
+		if utilization > 1 {
+			utilization = 1
+		}
+	}
+
+	refillIn := time.Duration(0)
+	if l.rate > 0 {
+		deficit := l.capacity - remaining
+		if deficit > 0 {
+			refillSeconds := deficit / l.rate
+			refillIn = time.Duration(refillSeconds * float64(time.Second))
+		}
+	}
+
+	return Status{
+		Rate:        l.rate,
+		Capacity:    l.capacity,
+		Remaining:   remaining,
+		Utilization: utilization,
+		RefillIn:    refillIn,
+	}
 }
