@@ -35,6 +35,8 @@ type profileSettings struct {
 	Threads             *int           `yaml:"threads"`
 	DNSServer           *string        `yaml:"dns_server"`
 	DNSTimeout          *time.Duration `yaml:"dns_timeout"`
+	DNSCache            *bool          `yaml:"dns_cache"`
+	DNSCacheSize        *int           `yaml:"dns_cache_size"`
 	Timeout             *time.Duration `yaml:"timeout"`
 	ShowAll             *bool          `yaml:"show_all"`
 	WordlistPath        *string        `yaml:"wordlist"`
@@ -192,6 +194,12 @@ func applyProfileSettings(cfg *Config, profile *profileSettings, cmd *cobra.Comm
 	}
 	if profile.DNSTimeout != nil && !flagChanged(flags, "dns-timeout") {
 		cfg.DNSTimeout = *profile.DNSTimeout
+	}
+	if profile.DNSCache != nil && !flagChanged(flags, "dns-cache") {
+		cfg.DNSCache = *profile.DNSCache
+	}
+	if profile.DNSCacheSize != nil && !flagChanged(flags, "dns-cache-size") {
+		cfg.DNSCacheSize = *profile.DNSCacheSize
 	}
 	if profile.Timeout != nil && !flagChanged(flags, "timeout") {
 		cfg.Timeout = *profile.Timeout
