@@ -28,26 +28,28 @@ const (
 
 // Config captures all runtime configuration for the CLI.
 type Config struct {
-	Domain       string
-	Mode         string
-	OutputPath   string
-	DiffPath     string
-	Verbose      bool
-	Silent       bool
-	ConfigPath   string
-	Profile      string
-	LogLevel     string
-	LogFile      string
-	Format       Format
-	JSONPretty   bool
-	Sources      []string
-	Threads      int
-	DNSServer    string
-	DNSTimeout   time.Duration
-	Timeout      time.Duration
-	ShowAll      bool
-	WordlistPath string
-	Permutations bool
+	Domain        string
+	Mode          string
+	OutputPath    string
+	DiffPath      string
+	Verbose       bool
+	Silent        bool
+	ConfigPath    string
+	Profile       string
+	LogLevel      string
+	LogFile       string
+	Format        Format
+	JSONPretty    bool
+	Sources       []string
+	Threads       int
+	DNSServer     string
+	DNSTimeout    time.Duration
+	Timeout       time.Duration
+	ShowAll       bool
+	WordlistPath  string
+	Permutations  bool
+	Watch         bool
+	WatchInterval time.Duration
 
 	VirusTotalAPIKey string
 	FilterWildcards  bool
@@ -58,6 +60,8 @@ type Config struct {
 
 	Export0xGenEndpoint string
 	APIKey              string
+	WebhookURL          string
+	WebhookSecret       string
 
 	RateLimit float64
 }
@@ -78,6 +82,8 @@ func BindFlags(cmd *cobra.Command) *Config {
 	flags.StringVar(&cfg.LogFile, "log-file", "", "Optional file path to append structured logs")
 	flags.StringVar((*string)(&cfg.Format), "format", string(FormatJSON), "Output format (json, csv, txt)")
 	flags.BoolVar(&cfg.JSONPretty, "json-pretty", false, "Pretty-print JSON output with indentation")
+	flags.BoolVar(&cfg.Watch, "watch", false, "Continuously monitor for new findings until interrupted")
+	flags.DurationVar(&cfg.WatchInterval, "watch-interval", 5*time.Minute, "Interval between watch iterations")
 	flags.StringSliceVar(&cfg.Sources, "sources", nil, "Comma-separated list of passive sources to query")
 	flags.IntVar(&cfg.Threads, "threads", 50, "Number of concurrent DNS resolution workers")
 	flags.StringVar(&cfg.ConfigPath, "config", "", "Path to a YAML configuration file (defaults to .nitr0gen.yaml if present)")
@@ -95,6 +101,8 @@ func BindFlags(cmd *cobra.Command) *Config {
 	flags.StringVar(&cfg.ScreenshotDir, "screenshot-dir", "", "Directory to store probe screenshots (defaults to ./screenshots)")
 	flags.StringVar(&cfg.Export0xGenEndpoint, "export-0xgen", "", "0xg3n hub API endpoint to export discovered subdomains")
 	flags.StringVar(&cfg.APIKey, "api-key", "", "API key used for authenticated exports (falls back to NITR0G3N_API_KEY env var)")
+	flags.StringVar(&cfg.WebhookURL, "webhook", "", "Webhook endpoint to notify with discovered records")
+	flags.StringVar(&cfg.WebhookSecret, "webhook-secret", "", "Optional secret used to sign webhook payloads")
 	flags.Float64Var(&cfg.RateLimit, "rate-limit", 0, "Maximum number of outbound requests per second (0 for unlimited)")
 
 	return cfg
@@ -182,6 +190,13 @@ func (c *Config) Validate() error {
 	if c.DNSTimeout <= 0 {
 		c.DNSTimeout = c.Timeout
 	}
+
+	if c.WatchInterval <= 0 {
+		c.WatchInterval = 5 * time.Minute
+	}
+
+	c.WebhookURL = strings.TrimSpace(c.WebhookURL)
+	c.WebhookSecret = strings.TrimSpace(c.WebhookSecret)
 
 	if c.Silent && c.Verbose {
 		return fmt.Errorf("--silent cannot be combined with --verbose")

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -23,6 +24,7 @@ import (
 	"github.com/yourusername/nitr0g3n/filters"
 	"github.com/yourusername/nitr0g3n/logging"
 	"github.com/yourusername/nitr0g3n/netutil"
+	"github.com/yourusername/nitr0g3n/notifier/webhook"
 	"github.com/yourusername/nitr0g3n/output"
 	"github.com/yourusername/nitr0g3n/passive"
 	"github.com/yourusername/nitr0g3n/passive/certtransparency"
@@ -79,17 +81,22 @@ infrastructure quickly and accurately.`,
 
 		verboseEnabled := cfg.Verbose || level <= logging.LevelDebug
 
-		if !verboseEnabled && !cmd.Flags().Changed("domain") && !cmd.Flags().Changed("output") && !cmd.Flags().Changed("mode") && !cmd.Flags().Changed("format") {
-			return cmd.Help()
+		targets, err := gatherTargets(cmd.InOrStdin(), cfg.Domain)
+		if err != nil {
+			return err
 		}
 
-		if cfg.Domain == "" {
-			logger.Warnf("No target domain specified. Use --domain to set a target or see --help for more details.")
+		if len(targets) == 0 {
+			logger.Warnf("No target domain specified. Use --domain to set a target or pipe targets via stdin.")
+			if !verboseEnabled {
+				_ = cmd.Help()
+			}
 			return nil
 		}
 
-		limiter := ratelimit.New(cfg.RateLimit)
-		httpClient := netutil.NewHTTPClient(cfg.Timeout, limiter)
+		if cfg.Watch && len(targets) > 1 {
+			return fmt.Errorf("--watch can only be used with a single target")
+		}
 
 		writer, err := output.NewWriter(cfg)
 		if err != nil {
@@ -97,27 +104,134 @@ infrastructure quickly and accurately.`,
 		}
 		defer writer.Close()
 
-		var (
-			diffBaseline  map[string]output.Record
-			diffRemaining map[string]output.Record
-			diffStats     diffSummary
-		)
-		if cfg.DiffPath != "" {
-			previous, err := output.LoadRecords(cfg.DiffPath)
-			if err != nil {
-				logger.Warnf("Unable to load diff baseline %s: %v", cfg.DiffPath, err)
-			} else {
-				diffBaseline = make(map[string]output.Record, len(previous))
-				diffRemaining = make(map[string]output.Record, len(previous))
-				for _, rec := range previous {
-					normalized := normalizeDiffRecord(rec)
-					if normalized.Subdomain == "" {
-						continue
-					}
-					diffBaseline[normalized.Subdomain] = normalized
-					diffRemaining[normalized.Subdomain] = normalized
+		if cfg.LogFile != "" {
+			logger.Infof("File logging enabled: %s", cfg.LogFile)
+		}
+
+		for _, target := range targets {
+			domain := strings.TrimSpace(target)
+			if domain == "" {
+				continue
+			}
+
+			domainCfg := *cfg
+			domainCfg.Domain = domain
+
+			if err := runDomain(ctx, &domainCfg, logger, writer, verboseEnabled); err != nil {
+				return err
+			}
+
+			if ctx.Err() != nil {
+				break
+			}
+		}
+
+		return nil
+	},
+}
+
+func init() {
+	cfg = config.BindFlags(rootCmd)
+}
+
+func gatherTargets(input io.Reader, domain string) ([]string, error) {
+	trimmed := strings.TrimSpace(domain)
+	if trimmed != "" {
+		return []string{trimmed}, nil
+	}
+
+	return readTargetsFromStdin(input)
+}
+
+func readTargetsFromStdin(r io.Reader) ([]string, error) {
+	file, ok := r.(*os.File)
+	if ok {
+		if stat, err := file.Stat(); err == nil {
+			if stat.Mode()&os.ModeCharDevice != 0 {
+				return nil, nil
+			}
+		}
+	}
+
+	scanner := bufio.NewScanner(r)
+	targets := make([]string, 0)
+	seen := make(map[string]struct{})
+
+	for scanner.Scan() {
+		value := strings.TrimSpace(scanner.Text())
+		if value == "" {
+			continue
+		}
+		lower := strings.ToLower(value)
+		if _, exists := seen[lower]; exists {
+			continue
+		}
+		seen[lower] = struct{}{}
+		targets = append(targets, value)
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+
+	return targets, nil
+}
+
+func runDomain(ctx context.Context, cfg *config.Config, logger *logging.Logger, writer *output.Writer, verboseEnabled bool) error {
+	limiter := ratelimit.New(cfg.RateLimit)
+	httpClient := netutil.NewHTTPClient(cfg.Timeout, limiter)
+
+	notifier, err := webhook.New(webhook.Options{
+		Endpoint: cfg.WebhookURL,
+		Secret:   cfg.WebhookSecret,
+		Domain:   cfg.Domain,
+		Client:   httpClient,
+		Logger:   logger.Writer(logging.LevelInfo),
+	})
+	if err != nil {
+		return err
+	}
+
+	var diffBaseline map[string]output.Record
+	if cfg.DiffPath != "" {
+		previous, err := output.LoadRecords(cfg.DiffPath)
+		if err != nil {
+			logger.Warnf("Unable to load diff baseline %s: %v", cfg.DiffPath, err)
+		} else {
+			diffBaseline = make(map[string]output.Record, len(previous))
+			for _, rec := range previous {
+				normalized := normalizeDiffRecord(rec)
+				if normalized.Subdomain == "" {
+					continue
 				}
-				logger.Infof("Loaded %d baseline record(s) from %s", len(diffBaseline), cfg.DiffPath)
+				diffBaseline[normalized.Subdomain] = normalized
+			}
+			logger.Infof("Loaded %d baseline record(s) from %s", len(diffBaseline), cfg.DiffPath)
+		}
+	}
+
+	var watchKnown map[string]output.Record
+	if cfg.Watch {
+		watchKnown = make(map[string]output.Record)
+	}
+
+	iteration := 0
+	for {
+		iteration++
+
+		diffRemaining := cloneDiffBaseline(diffBaseline)
+		diffStats := diffSummary{}
+
+		if cfg.Watch {
+			logger.Infof("Watch iteration %d: enumerating domain %s using %s mode (format=%s)", iteration, cfg.Domain, cfg.Mode, cfg.Format)
+		} else {
+			logger.Infof("Enumerating domain %s using %s mode (format=%s)", cfg.Domain, cfg.Mode, cfg.Format)
+		}
+		if iteration == 1 {
+			if !cfg.LiveOutput() {
+				logger.Infof("Results will be written to %s", cfg.OutputPath)
+			} else {
+				logger.Infof("Live output enabled; results will be printed to stdout")
 			}
 		}
 
@@ -133,255 +247,20 @@ infrastructure quickly and accurately.`,
 			return err
 		}
 
-		logger.Infof("Enumerating domain %s using %s mode (format=%s)", cfg.Domain, cfg.Mode, cfg.Format)
-		if !cfg.LiveOutput() {
-			logger.Infof("Results will be written to %s", cfg.OutputPath)
-		} else {
-			logger.Infof("Live output enabled; results will be printed to stdout")
-		}
-		if cfg.LogFile != "" {
-			logger.Infof("File logging enabled: %s", cfg.LogFile)
-		}
-
-		subdomainSources := make(map[string][]string)
-		zoneRecords := make(map[string]map[string][]string)
-
 		tracker := stats.NewTracker(stats.Options{Logger: logger})
 		tracker.Start(ctx.Done())
-		defer func() {
-			snapshot := tracker.Stop()
-			if runErr == nil {
-				logScanSummary(logger, cfg, snapshot)
-			}
-		}()
 
-		if cfg.Mode == config.ModePassive || cfg.Mode == config.ModeAll {
-			passiveSources, err := buildPassiveSources(cfg, httpClient)
-			if err != nil {
-				return err
-			}
-
-			aggregation := passive.Aggregate(ctx, cfg.Domain, passiveSources)
-			if len(aggregation.Errors) > 0 {
-				for name, sourceErr := range aggregation.Errors {
-					logger.Warnf("Passive source %s error: %v", name, sourceErr)
-				}
-			}
-
-			for subdomain, sources := range aggregation.Subdomains {
-				for _, source := range sources {
-					addSource(subdomainSources, subdomain, source)
-				}
-			}
+		iterErr := runCycle(ctx, cfg, logger, limiter, httpClient, writer, exporter, diffBaseline, diffRemaining, &diffStats, watchKnown, notifier, tracker, verboseEnabled)
+		snapshot := tracker.Stop()
+		if iterErr == nil {
+			logScanSummary(logger, cfg, snapshot)
 		}
 
-		if cfg.Mode == config.ModeActive || cfg.Mode == config.ModeAll {
-			ztOpts := zonetransfer.Options{
-				Domain:      cfg.Domain,
-				DNSServer:   cfg.DNSServer,
-				Timeout:     cfg.Timeout,
-				Verbose:     verboseEnabled,
-				LogWriter:   logger.Writer(logging.LevelDebug),
-				RateLimiter: limiter,
-			}
-
-			transfers, err := zonetransfer.Run(ctx, ztOpts)
-			if err != nil {
-				return fmt.Errorf("active zone transfer: %w", err)
-			}
-
-			for _, transfer := range transfers {
-				for hostname := range transfer.Records {
-					addSource(subdomainSources, hostname, "active:zonetransfer")
-				}
-				mergeZoneRecords(zoneRecords, transfer.Records)
-			}
-
-			progressWriter := logger.ConsoleWriter()
-
-			opts := bruteforce.Options{
-				Domain:         cfg.Domain,
-				WordlistPath:   cfg.WordlistPath,
-				Permutations:   cfg.Permutations,
-				DNSServer:      cfg.DNSServer,
-				Timeout:        cfg.DNSTimeout,
-				Workers:        cfg.Threads,
-				ProgressWriter: progressWriter,
-				RateLimiter:    limiter,
-			}
-
-			results, err := bruteforce.Run(ctx, opts)
-			if err != nil {
-				return fmt.Errorf("active bruteforce: %w", err)
-			}
-
-			for _, res := range results {
-				addSource(subdomainSources, res.Subdomain, "active:bruteforce")
-			}
+		if iterErr != nil {
+			return iterErr
 		}
 
-		if len(subdomainSources) == 0 {
-			logger.Infof("No subdomains discovered for %s", cfg.Domain)
-			return nil
-		}
-
-		subdomains := make([]string, 0, len(subdomainSources))
-		for subdomain := range subdomainSources {
-			subdomains = append(subdomains, subdomain)
-		}
-		sort.Strings(subdomains)
-
-		resolveOpts := resolver.Options{
-			Server:      cfg.DNSServer,
-			Timeout:     cfg.DNSTimeout,
-			RateLimiter: limiter,
-		}
-		dnsResolver, err := resolver.New(resolveOpts)
-		if err != nil {
-			return fmt.Errorf("configuring resolver: %w", err)
-		}
-
-		resultsCh := dnsResolver.ResolveAll(ctx, subdomains, cfg.Threads)
-
-		var wildcardProfile filters.WildcardProfile
-		if cfg.FilterWildcards {
-			profile, err := filters.DetectWildcard(ctx, dnsResolver, cfg.Domain, 3)
-			if err != nil {
-				logger.Warnf("Wildcard detection error: %v", err)
-			} else {
-				wildcardProfile = profile
-				if wildcardProfile.Active() {
-					logger.Infof("Wildcard DNS detected; matching resolutions will be filtered")
-				}
-			}
-		}
-
-		var probeClient *probe.Client
-		if cfg.ProbeHTTP {
-			probeClient = probe.NewClient(probe.Options{Timeout: cfg.Timeout, HTTPClient: netutil.NewHTTPClient(cfg.Timeout, limiter), ScreenshotDir: cfg.ScreenshotDir})
-		}
-
-		seenIPs := make(map[string]struct{})
-		if !cfg.UniqueIPs {
-			seenIPs = nil
-		}
-
-		for resolution := range resultsCh {
-			subdomain := resolution.Subdomain
-			if subdomain == "" {
-				continue
-			}
-
-			sources := append([]string(nil), subdomainSources[subdomain]...)
-			mergedIPs, mergedRecords := mergeResolution(resolution, zoneRecords[subdomain])
-			resolved := len(mergedIPs) > 0 || len(mergedRecords) > 0
-			tracker.RecordAttempt(resolved)
-
-			if cfg.FilterWildcards && wildcardProfile.Active() && wildcardProfile.Matches(resolution) {
-				if verboseEnabled {
-					logger.Debugf("Skipping wildcard subdomain: %s", subdomain)
-				}
-				continue
-			}
-
-			if !cfg.ShowAll && len(mergedIPs) == 0 && len(mergedRecords) == 0 {
-				delete(subdomainSources, subdomain)
-				delete(zoneRecords, subdomain)
-				continue
-			}
-
-			if resolution.Err != nil {
-				logger.Warnf("DNS resolution %s error: %v", subdomain, resolution.Err)
-			}
-
-			if cfg.FilterWildcards && filters.IsCDNResponse(mergedRecords) {
-				if verboseEnabled {
-					logger.Debugf("Skipping CDN-derived subdomain: %s", subdomain)
-				}
-				delete(subdomainSources, subdomain)
-				delete(zoneRecords, subdomain)
-				continue
-			}
-
-			if len(cfg.Scope) > 0 && !matchesScope(subdomain, cfg.Scope) {
-				if verboseEnabled {
-					logger.Debugf("Skipping subdomain outside scope: %s", subdomain)
-				}
-				delete(subdomainSources, subdomain)
-				delete(zoneRecords, subdomain)
-				continue
-			}
-
-			if cfg.UniqueIPs {
-				mergedIPs, mergedRecords = filterUniqueIPs(mergedIPs, mergedRecords, seenIPs)
-				if len(mergedIPs) == 0 {
-					delete(subdomainSources, subdomain)
-					delete(zoneRecords, subdomain)
-					continue
-				}
-			}
-
-			record := output.Record{
-				Subdomain:   subdomain,
-				Source:      strings.Join(sources, ","),
-				IPAddresses: mergedIPs,
-				DNSRecords:  mergedRecords,
-			}
-			if cfg.ProbeHTTP && probeClient != nil {
-				record.HTTPServices = probeClient.Probe(ctx, subdomain)
-			}
-			if record.Timestamp == "" {
-				record.Timestamp = time.Now().UTC().Format(time.RFC3339)
-			}
-
-			if diffBaseline != nil {
-				normalized := normalizeDiffRecord(record)
-				if normalized.Subdomain != "" {
-					if prev, ok := diffBaseline[normalized.Subdomain]; ok {
-						if !diffRecordsEqual(prev, normalized) {
-							record.Change = "updated"
-							diffStats.updated++
-						}
-						delete(diffRemaining, normalized.Subdomain)
-					} else {
-						record.Change = "new"
-						diffStats.added++
-					}
-				}
-			}
-
-			if err := writer.WriteRecord(record); err != nil {
-				return fmt.Errorf("writing record: %w", err)
-			}
-
-			tracker.RecordDiscovery(sources)
-
-			if exporter != nil {
-				if err := exporter.AddRecord(ctx, record); err != nil {
-					return fmt.Errorf("exporting to 0xg3n: %w", err)
-				}
-			}
-
-			delete(subdomainSources, subdomain)
-			delete(zoneRecords, subdomain)
-		}
-
-		if exporter != nil {
-			flushCtx, cancel := context.WithTimeout(context.Background(), cfg.Timeout)
-			defer cancel()
-
-			summary, err := exporter.Flush(flushCtx)
-			if err != nil {
-				return fmt.Errorf("finalising 0xg3n export: %w", err)
-			}
-			if summary.TotalRecords > 0 || summary.BatchesSent > 0 {
-				logger.Infof("0xg3n export complete: %d record(s) across %d batch(es)", summary.TotalRecords, summary.BatchesSent)
-			} else {
-				logger.Infof("0xg3n export complete: no records to send")
-			}
-		}
-
-		if diffBaseline != nil {
+		if diffBaseline != nil && diffRemaining != nil {
 			if remaining := len(diffRemaining); remaining > 0 {
 				diffStats.removed = make([]string, 0, remaining)
 				for subdomain := range diffRemaining {
@@ -404,16 +283,342 @@ infrastructure quickly and accurately.`,
 			}
 		}
 
-		if err := ctx.Err(); err != nil && !errors.Is(err, context.Canceled) {
+		if !cfg.Watch {
+			return nil
+		}
+
+		if err := ctx.Err(); err != nil {
+			if errors.Is(err, context.Canceled) {
+				return nil
+			}
 			return err
 		}
 
-		return nil
-	},
+		logger.Infof("Watch iteration %d complete; sleeping for %s", iteration, cfg.WatchInterval)
+
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(cfg.WatchInterval):
+		}
+	}
 }
 
-func init() {
-	cfg = config.BindFlags(rootCmd)
+func runCycle(ctx context.Context, cfg *config.Config, logger *logging.Logger, limiter *ratelimit.Limiter, httpClient *http.Client, writer *output.Writer, exporter *oxg3n.Exporter, diffBaseline map[string]output.Record, diffRemaining map[string]output.Record, diffStats *diffSummary, watchKnown map[string]output.Record, notifier *webhook.Notifier, tracker *stats.Tracker, verboseEnabled bool) error {
+	subdomainSources := make(map[string][]string)
+	zoneRecords := make(map[string]map[string][]string)
+
+	if cfg.Mode == config.ModePassive || cfg.Mode == config.ModeAll {
+		passiveSources, err := buildPassiveSources(cfg, httpClient)
+		if err != nil {
+			return err
+		}
+
+		aggregation := passive.Aggregate(ctx, cfg.Domain, passiveSources)
+		if len(aggregation.Errors) > 0 {
+			for name, sourceErr := range aggregation.Errors {
+				logger.Warnf("Passive source %s error: %v", name, sourceErr)
+			}
+		}
+
+		for subdomain, sources := range aggregation.Subdomains {
+			for _, source := range sources {
+				addSource(subdomainSources, subdomain, source)
+			}
+		}
+	}
+
+	if cfg.Mode == config.ModeActive || cfg.Mode == config.ModeAll {
+		ztOpts := zonetransfer.Options{
+			Domain:      cfg.Domain,
+			DNSServer:   cfg.DNSServer,
+			Timeout:     cfg.Timeout,
+			Verbose:     verboseEnabled,
+			LogWriter:   logger.Writer(logging.LevelDebug),
+			RateLimiter: limiter,
+		}
+
+		transfers, err := zonetransfer.Run(ctx, ztOpts)
+		if err != nil {
+			return fmt.Errorf("active zone transfer: %w", err)
+		}
+
+		for _, transfer := range transfers {
+			for hostname := range transfer.Records {
+				addSource(subdomainSources, hostname, "active:zonetransfer")
+			}
+			mergeZoneRecords(zoneRecords, transfer.Records)
+		}
+
+		progressWriter := logger.ConsoleWriter()
+
+		opts := bruteforce.Options{
+			Domain:         cfg.Domain,
+			WordlistPath:   cfg.WordlistPath,
+			Permutations:   cfg.Permutations,
+			DNSServer:      cfg.DNSServer,
+			Timeout:        cfg.DNSTimeout,
+			Workers:        cfg.Threads,
+			ProgressWriter: progressWriter,
+			RateLimiter:    limiter,
+		}
+
+		results, err := bruteforce.Run(ctx, opts)
+		if err != nil {
+			return fmt.Errorf("active bruteforce: %w", err)
+		}
+
+		for _, res := range results {
+			addSource(subdomainSources, res.Subdomain, "active:bruteforce")
+		}
+	}
+
+	if len(subdomainSources) == 0 {
+		logger.Infof("No subdomains discovered for %s", cfg.Domain)
+		return flushExporter(ctx, cfg, logger, exporter)
+	}
+
+	subdomains := make([]string, 0, len(subdomainSources))
+	for subdomain := range subdomainSources {
+		subdomains = append(subdomains, subdomain)
+	}
+	sort.Strings(subdomains)
+
+	resolveOpts := resolver.Options{
+		Server:      cfg.DNSServer,
+		Timeout:     cfg.DNSTimeout,
+		RateLimiter: limiter,
+	}
+	dnsResolver, err := resolver.New(resolveOpts)
+	if err != nil {
+		return fmt.Errorf("configuring resolver: %w", err)
+	}
+
+	resultsCh := dnsResolver.ResolveAll(ctx, subdomains, cfg.Threads)
+
+	var wildcardProfile filters.WildcardProfile
+	if cfg.FilterWildcards {
+		profile, err := filters.DetectWildcard(ctx, dnsResolver, cfg.Domain, 3)
+		if err != nil {
+			logger.Warnf("Wildcard detection error: %v", err)
+		} else {
+			wildcardProfile = profile
+			if wildcardProfile.Active() {
+				logger.Infof("Wildcard DNS detected; matching resolutions will be filtered")
+			}
+		}
+	}
+
+	var probeClient *probe.Client
+	if cfg.ProbeHTTP {
+		probeClient = probe.NewClient(probe.Options{Timeout: cfg.Timeout, HTTPClient: netutil.NewHTTPClient(cfg.Timeout, limiter), ScreenshotDir: cfg.ScreenshotDir})
+	}
+
+	seenIPs := make(map[string]struct{})
+	if !cfg.UniqueIPs {
+		seenIPs = nil
+	}
+
+	for resolution := range resultsCh {
+		subdomain := resolution.Subdomain
+		if subdomain == "" {
+			continue
+		}
+
+		sources := append([]string(nil), subdomainSources[subdomain]...)
+		mergedIPs, mergedRecords := mergeResolution(resolution, zoneRecords[subdomain])
+		resolved := len(mergedIPs) > 0 || len(mergedRecords) > 0
+		if tracker != nil {
+			tracker.RecordAttempt(resolved)
+		}
+
+		normalized := output.Record{}
+		normalized.Subdomain = strings.ToLower(strings.TrimSpace(subdomain))
+
+		if cfg.FilterWildcards && wildcardProfile.Active() && wildcardProfile.Matches(resolution) {
+			if verboseEnabled {
+				logger.Debugf("Skipping wildcard subdomain: %s", subdomain)
+			}
+			if diffRemaining != nil && normalized.Subdomain != "" {
+				delete(diffRemaining, normalized.Subdomain)
+			}
+			continue
+		}
+
+		if !cfg.ShowAll && len(mergedIPs) == 0 && len(mergedRecords) == 0 {
+			delete(subdomainSources, subdomain)
+			delete(zoneRecords, subdomain)
+			if diffRemaining != nil && normalized.Subdomain != "" {
+				delete(diffRemaining, normalized.Subdomain)
+			}
+			continue
+		}
+
+		if resolution.Err != nil {
+			logger.Warnf("DNS resolution %s error: %v", subdomain, resolution.Err)
+		}
+
+		if cfg.FilterWildcards && filters.IsCDNResponse(mergedRecords) {
+			if verboseEnabled {
+				logger.Debugf("Skipping CDN-derived subdomain: %s", subdomain)
+			}
+			delete(subdomainSources, subdomain)
+			delete(zoneRecords, subdomain)
+			if diffRemaining != nil && normalized.Subdomain != "" {
+				delete(diffRemaining, normalized.Subdomain)
+			}
+			continue
+		}
+
+		if len(cfg.Scope) > 0 && !matchesScope(subdomain, cfg.Scope) {
+			if verboseEnabled {
+				logger.Debugf("Skipping subdomain outside scope: %s", subdomain)
+			}
+			delete(subdomainSources, subdomain)
+			delete(zoneRecords, subdomain)
+			if diffRemaining != nil && normalized.Subdomain != "" {
+				delete(diffRemaining, normalized.Subdomain)
+			}
+			continue
+		}
+
+		if cfg.UniqueIPs {
+			mergedIPs, mergedRecords = filterUniqueIPs(mergedIPs, mergedRecords, seenIPs)
+			if len(mergedIPs) == 0 {
+				delete(subdomainSources, subdomain)
+				delete(zoneRecords, subdomain)
+				if diffRemaining != nil && normalized.Subdomain != "" {
+					delete(diffRemaining, normalized.Subdomain)
+				}
+				continue
+			}
+		}
+
+		record := output.Record{
+			Subdomain:   subdomain,
+			Source:      strings.Join(sources, ","),
+			IPAddresses: mergedIPs,
+			DNSRecords:  mergedRecords,
+		}
+		if cfg.ProbeHTTP && probeClient != nil {
+			record.HTTPServices = probeClient.Probe(ctx, subdomain)
+		}
+		if record.Timestamp == "" {
+			record.Timestamp = time.Now().UTC().Format(time.RFC3339)
+		}
+
+		normalized = normalizeDiffRecord(record)
+
+		if watchKnown != nil && normalized.Subdomain != "" {
+			if prev, ok := watchKnown[normalized.Subdomain]; ok {
+				if diffRecordsEqual(prev, normalized) {
+					if diffRemaining != nil {
+						delete(diffRemaining, normalized.Subdomain)
+					}
+					continue
+				}
+				record.Change = "updated"
+			} else {
+				record.Change = "new"
+			}
+		}
+
+		if diffBaseline != nil {
+			if normalized.Subdomain != "" {
+				if prev, ok := diffBaseline[normalized.Subdomain]; ok {
+					if !diffRecordsEqual(prev, normalized) {
+						record.Change = "updated"
+						if diffStats != nil {
+							diffStats.updated++
+						}
+					}
+					if diffRemaining != nil {
+						delete(diffRemaining, normalized.Subdomain)
+					}
+				} else {
+					if diffStats != nil {
+						diffStats.added++
+					}
+					record.Change = "new"
+				}
+			}
+		}
+
+		if err := writer.WriteRecord(record); err != nil {
+			return fmt.Errorf("writing record: %w", err)
+		}
+
+		if tracker != nil {
+			tracker.RecordDiscovery(sources)
+		}
+
+		if exporter != nil {
+			if err := exporter.AddRecord(ctx, record); err != nil {
+				return fmt.Errorf("exporting to 0xg3n: %w", err)
+			}
+		}
+
+		if notifier != nil {
+			if err := notifier.Notify(ctx, cfg.Domain, record); err != nil {
+				return fmt.Errorf("sending webhook notification: %w", err)
+			}
+		}
+
+		if watchKnown != nil && normalized.Subdomain != "" {
+			watchKnown[normalized.Subdomain] = normalized
+		}
+		if diffBaseline != nil && normalized.Subdomain != "" {
+			diffBaseline[normalized.Subdomain] = normalized
+		}
+
+		delete(subdomainSources, subdomain)
+		delete(zoneRecords, subdomain)
+	}
+
+	if exporter != nil {
+		if err := flushExporter(ctx, cfg, logger, exporter); err != nil {
+			return err
+		}
+	}
+
+	if err := ctx.Err(); err != nil && !errors.Is(err, context.Canceled) {
+		return err
+	}
+
+	return nil
+}
+
+func flushExporter(ctx context.Context, cfg *config.Config, logger *logging.Logger, exporter *oxg3n.Exporter) error {
+	if exporter == nil {
+		return nil
+	}
+
+	flushCtx, cancel := context.WithTimeout(context.Background(), cfg.Timeout)
+	defer cancel()
+
+	summary, err := exporter.Flush(flushCtx)
+	if err != nil {
+		return fmt.Errorf("finalising 0xg3n export: %w", err)
+	}
+
+	if summary.TotalRecords > 0 || summary.BatchesSent > 0 {
+		logger.Infof("0xg3n export complete: %d record(s) across %d batch(es)", summary.TotalRecords, summary.BatchesSent)
+	} else {
+		logger.Infof("0xg3n export complete: no records to send")
+	}
+
+	return nil
+}
+
+func cloneDiffBaseline(baseline map[string]output.Record) map[string]output.Record {
+	if baseline == nil {
+		return nil
+	}
+	copy := make(map[string]output.Record, len(baseline))
+	for key, value := range baseline {
+		copy[key] = value
+	}
+	return copy
 }
 
 func logScanSummary(logger *logging.Logger, cfg *config.Config, snapshot stats.Snapshot) {
