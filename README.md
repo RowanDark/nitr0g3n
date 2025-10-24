@@ -37,10 +37,13 @@ Commonly used flags include:
 | `--mode` | Enumeration mode: `passive`, `active`, or `all`. |
 | `--format` | Output format: `json`, `csv`, or `txt`. |
 | `--output` | Destination file path for results (defaults to stdout). |
+| `--json-pretty` | Enable human-readable indentation when using JSON output. |
+| `--diff` | Compare the current scan against a previous JSON results file. |
 | `--threads` | Concurrent DNS worker count for active mode. |
 | `--wordlist` | Custom wordlist path for bruteforce enumeration. |
 | `--permutations` | Enable/disable wordlist permutations (default: enabled). |
-| `--probe` | Probe discovered hosts over HTTP/HTTPS. |
+| `--probe` | Probe discovered hosts over HTTP/HTTPS, capturing banners and screenshots. |
+| `--screenshot-dir` | Directory to store generated probe screenshots. |
 | `--filter-wildcards` | Filter DNS wildcard and CDN responses. |
 | `--export-0xgen` | 0xg3n hub endpoint to export findings. |
 | `--api-key` | API key for authenticated exports and VirusTotal usage. |

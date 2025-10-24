@@ -24,7 +24,14 @@ func (s *stubTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if status == 0 {
 		status = http.StatusOK
 	}
-	return &http.Response{StatusCode: status, Body: io.NopCloser(bytes.NewReader(nil))}, nil
+	body := "<html><head><title>Example</title></head><body>Hello nitr0g3n</body></html>"
+	resp := &http.Response{
+		StatusCode: status,
+		Body:       io.NopCloser(bytes.NewReader([]byte(body))),
+		Header:     make(http.Header),
+	}
+	resp.Header.Set("Server", "unit-test")
+	return resp, nil
 }
 
 func TestNewClientDefaults(t *testing.T) {
@@ -45,7 +52,8 @@ func TestProbe(t *testing.T) {
 		},
 	}
 	httpClient := &http.Client{Transport: transport, Timeout: time.Second}
-	client := NewClient(Options{HTTPClient: httpClient})
+	screenshotDir := t.TempDir()
+	client := NewClient(Options{HTTPClient: httpClient, ScreenshotDir: screenshotDir})
 
 	services := client.Probe(context.Background(), "example.com")
 	if len(services) != 2 {
@@ -53,5 +61,14 @@ func TestProbe(t *testing.T) {
 	}
 	if services[0].StatusCode != http.StatusOK || services[1].Error == "" {
 		t.Fatalf("unexpected probe results: %+v", services)
+	}
+	if services[0].Banner != "unit-test" {
+		t.Fatalf("expected banner metadata to be captured")
+	}
+	if services[0].Title == "" || services[0].Snippet == "" {
+		t.Fatalf("expected title and snippet in probe results: %+v", services[0])
+	}
+	if services[0].ScreenshotPath == "" {
+		t.Fatalf("expected screenshot to be generated")
 	}
 }
