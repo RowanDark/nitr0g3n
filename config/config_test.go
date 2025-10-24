@@ -16,6 +16,9 @@ func TestValidateDefaults(t *testing.T) {
 	if cfg.Threads != 50 {
 		t.Fatalf("expected default threads 50, got %d", cfg.Threads)
 	}
+	if cfg.AutoTune {
+		t.Fatalf("expected auto-tune disabled by default")
+	}
 }
 
 func TestValidateInvalidMode(t *testing.T) {

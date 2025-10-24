@@ -42,6 +42,7 @@ type Config struct {
 	JSONPretty    bool
 	Sources       []string
 	Threads       int
+	AutoTune      bool
 	DNSServer     string
 	DNSTimeout    time.Duration
 	DNSCache      bool
@@ -88,6 +89,7 @@ func BindFlags(cmd *cobra.Command) *Config {
 	flags.DurationVar(&cfg.WatchInterval, "watch-interval", 5*time.Minute, "Interval between watch iterations")
 	flags.StringSliceVar(&cfg.Sources, "sources", nil, "Comma-separated list of passive sources to query")
 	flags.IntVar(&cfg.Threads, "threads", 50, "Number of concurrent DNS resolution workers")
+	flags.BoolVar(&cfg.AutoTune, "auto-tune", false, "Automatically adjust DNS worker pool based on resolver health")
 	flags.StringVar(&cfg.ConfigPath, "config", "", "Path to a YAML configuration file (defaults to .nitr0gen.yaml if present)")
 	flags.StringVar(&cfg.Profile, "profile", "", "Named configuration profile to apply from the config file")
 	flags.StringVar(&cfg.DNSServer, "dns-server", "", "Custom DNS server to use for resolution (host or host:port)")

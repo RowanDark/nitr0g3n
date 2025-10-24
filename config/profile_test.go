@@ -45,6 +45,7 @@ func TestApplyProfileLoadsNamedProfile(t *testing.T) {
       - crtsh
     threads: 25
     verbose: true
+    auto_tune: true
 `)
 
 	cmd := &cobra.Command{Use: "test"}
@@ -70,6 +71,9 @@ func TestApplyProfileLoadsNamedProfile(t *testing.T) {
 	}
 	if !cfg.Verbose {
 		t.Fatalf("expected verbose true")
+	}
+	if !cfg.AutoTune {
+		t.Fatalf("expected auto-tune true")
 	}
 }
 
