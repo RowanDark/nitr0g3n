@@ -39,6 +39,8 @@ Commonly used flags include:
 | `--output` | Destination file path for results (defaults to stdout). |
 | `--json-pretty` | Enable human-readable indentation when using JSON output. |
 | `--diff` | Compare the current scan against a previous JSON results file. |
+| `--watch` | Continuously rerun enumeration until interrupted. |
+| `--watch-interval` | Interval between watch iterations (default: 5m). |
 | `--threads` | Concurrent DNS worker count for active mode. |
 | `--wordlist` | Custom wordlist path for bruteforce enumeration. |
 | `--permutations` | Enable/disable wordlist permutations (default: enabled). |
@@ -47,6 +49,12 @@ Commonly used flags include:
 | `--filter-wildcards` | Filter DNS wildcard and CDN responses. |
 | `--export-0xgen` | 0xg3n hub endpoint to export findings. |
 | `--api-key` | API key for authenticated exports and VirusTotal usage. |
+| `--webhook` | Webhook endpoint that receives JSON notifications for each discovery. |
+| `--webhook-secret` | Optional secret used to sign webhook payloads. |
+
+You can also pipe newline-delimited targets into nitr0g3n. When `--domain` is
+omitted, the CLI reads targets from standard input and processes them
+sequentially, making it easy to integrate with other tools in a pipeline.
 
 See `nitro --help` for the complete list of configuration options.
 
@@ -69,6 +77,19 @@ See `nitro --help` for the complete list of configuration options.
 
   ```bash
   nitro --domain example.com --sources virustotal,crtsh --format json
+  ```
+
+* Monitor for new assets in real time with watch mode and webhook alerts:
+
+  ```bash
+  nitro --domain example.com --watch --watch-interval 10m \
+       --webhook https://hooks.internal.local/nitr0g3n
+  ```
+
+* Chain nitr0g3n with other tooling by streaming targets via stdin:
+
+  ```bash
+  cat domains.txt | nitro --mode passive --format json
   ```
 
 ## 0xg3n Integration
