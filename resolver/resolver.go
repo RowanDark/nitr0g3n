@@ -14,20 +14,32 @@ import (
 	"github.com/yourusername/nitr0g3n/ratelimit"
 )
 
+// dnsResolver captures the subset of the net.Resolver API the package relies on.
+type dnsResolver interface {
+	LookupIPAddr(context.Context, string) ([]net.IPAddr, error)
+	LookupCNAME(context.Context, string) (string, error)
+	LookupMX(context.Context, string) ([]*net.MX, error)
+	LookupTXT(context.Context, string) ([]string, error)
+	LookupNS(context.Context, string) ([]*net.NS, error)
+}
+
+// Options controls Resolver instantiation behaviour.
 type Options struct {
 	Server      string
 	Timeout     time.Duration
 	RateLimiter *ratelimit.Limiter
 }
 
+// Resolver performs DNS lookups against the system resolver or a custom server.
 type Resolver struct {
-	resolver *net.Resolver
+	resolver dnsResolver
 	timeout  time.Duration
 	server   string
 	limiter  *ratelimit.Limiter
 	dialer   *pooledDialer
 }
 
+// Result summarises the DNS records discovered for a hostname.
 type Result struct {
 	Subdomain   string
 	IPAddresses []string
@@ -35,6 +47,7 @@ type Result struct {
 	Err         error
 }
 
+// New instantiates a Resolver using the provided options.
 func New(options Options) (*Resolver, error) {
 	r := &Resolver{timeout: options.Timeout, limiter: options.RateLimiter}
 	if r.timeout <= 0 {
@@ -72,6 +85,7 @@ func New(options Options) (*Resolver, error) {
 	return r, nil
 }
 
+// Resolve performs a synchronous DNS lookup for the provided hostname.
 func (r *Resolver) Resolve(ctx context.Context, hostname string) Result {
 	if ctx == nil {
 		ctx = context.Background()
@@ -143,6 +157,7 @@ func (r *Resolver) Resolve(ctx context.Context, hostname string) Result {
 	return result
 }
 
+// ResolveAll launches a worker pool to resolve hostnames concurrently.
 func (r *Resolver) ResolveAll(ctx context.Context, hostnames []string, workers int) <-chan Result {
 	output := make(chan Result)
 	if len(hostnames) == 0 {
@@ -384,14 +399,17 @@ func uniqueSorted(values []string) []string {
 	return result
 }
 
+// Server returns the configured upstream DNS server address.
 func (r *Resolver) Server() string {
 	return r.server
 }
 
+// Timeout returns the configured per-query timeout duration.
 func (r *Resolver) Timeout() time.Duration {
 	return r.timeout
 }
 
+// ParseServer normalises DNS server host[:port] strings to host:port form.
 func ParseServer(address string) (string, error) {
 	address = strings.TrimSpace(address)
 	if address == "" {
@@ -399,6 +417,13 @@ func ParseServer(address string) (string, error) {
 	}
 	if strings.Count(address, ":") == 0 {
 		return net.JoinHostPort(address, "53"), nil
+	}
+	if strings.HasPrefix(address, "[") && strings.HasSuffix(address, "]") {
+		host := strings.TrimSuffix(strings.TrimPrefix(address, "["), "]")
+		if host == "" {
+			return "", fmt.Errorf("invalid dns server host")
+		}
+		return net.JoinHostPort(host, "53"), nil
 	}
 	host, port, err := net.SplitHostPort(address)
 	if err != nil {

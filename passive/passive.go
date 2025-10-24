@@ -7,6 +7,7 @@ import (
 	"sync"
 )
 
+// Source defines the contract implemented by passive intelligence providers.
 type Source interface {
 	Name() string
 	Enumerate(ctx context.Context, domain string) ([]string, error)
@@ -23,6 +24,7 @@ type sourceResult struct {
 	err        error
 }
 
+// Aggregate queries all provided passive sources and merges their output.
 func Aggregate(ctx context.Context, domain string, sources []Source) AggregateResult {
 	result := AggregateResult{
 		Subdomains: make(map[string][]string),
