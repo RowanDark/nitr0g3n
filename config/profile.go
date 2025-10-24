@@ -51,6 +51,7 @@ type profileSettings struct {
 	Export0xGenEndpoint *string        `yaml:"export_0xgen"`
 	APIKey              *string        `yaml:"api_key"`
 	RateLimit           *float64       `yaml:"rate_limit"`
+	GCPercent           *int           `yaml:"gc_percent"`
 }
 
 type StringSlice []string
@@ -243,6 +244,9 @@ func applyProfileSettings(cfg *Config, profile *profileSettings, cmd *cobra.Comm
 	}
 	if profile.RateLimit != nil && !flagChanged(flags, "rate-limit") {
 		cfg.RateLimit = *profile.RateLimit
+	}
+	if profile.GCPercent != nil && !flagChanged(flags, "gc-percent") {
+		cfg.GCPercent = *profile.GCPercent
 	}
 }
 
