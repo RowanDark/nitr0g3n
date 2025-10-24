@@ -48,6 +48,10 @@ infrastructure quickly and accurately.`,
 		ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
 
+		if err := config.ApplyProfile(cfg, cmd); err != nil {
+			return err
+		}
+
 		if err := cfg.Validate(); err != nil {
 			return err
 		}

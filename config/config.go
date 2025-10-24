@@ -33,6 +33,8 @@ type Config struct {
 	OutputPath   string
 	Verbose      bool
 	Silent       bool
+	ConfigPath   string
+	Profile      string
 	LogLevel     string
 	LogFile      string
 	Format       Format
@@ -73,6 +75,8 @@ func BindFlags(cmd *cobra.Command) *Config {
 	flags.StringVar((*string)(&cfg.Format), "format", string(FormatJSON), "Output format (json, csv, txt)")
 	flags.StringSliceVar(&cfg.Sources, "sources", nil, "Comma-separated list of passive sources to query")
 	flags.IntVar(&cfg.Threads, "threads", 50, "Number of concurrent DNS resolution workers")
+	flags.StringVar(&cfg.ConfigPath, "config", "", "Path to a YAML configuration file (defaults to .nitr0gen.yaml if present)")
+	flags.StringVar(&cfg.Profile, "profile", "", "Named configuration profile to apply from the config file")
 	flags.StringVar(&cfg.DNSServer, "dns-server", "", "Custom DNS server to use for resolution (host or host:port)")
 	flags.DurationVar(&cfg.DNSTimeout, "dns-timeout", 5*time.Second, "Timeout for individual DNS lookups")
 	flags.DurationVar(&cfg.Timeout, "timeout", 30*time.Second, "Global timeout for network operations")
