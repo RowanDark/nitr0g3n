@@ -67,6 +67,8 @@ type Config struct {
 	WebhookSecret       string
 
 	RateLimit float64
+
+	GCPercent int
 }
 
 // BindFlags registers the shared command-line flags and returns a Config
@@ -111,6 +113,7 @@ func BindFlags(cmd *cobra.Command) *Config {
 	flags.StringVar(&cfg.WebhookURL, "webhook", "", "Webhook endpoint to notify with discovered records")
 	flags.StringVar(&cfg.WebhookSecret, "webhook-secret", "", "Optional secret used to sign webhook payloads")
 	flags.Float64Var(&cfg.RateLimit, "rate-limit", 0, "Maximum number of outbound requests per second (0 for unlimited)")
+	flags.IntVar(&cfg.GCPercent, "gc-percent", 100, "Set the Go runtime GC target percentage")
 
 	return cfg
 }
@@ -185,6 +188,10 @@ func (c *Config) Validate() error {
 
 	if c.Threads <= 0 {
 		c.Threads = 50
+	}
+
+	if c.GCPercent <= 0 {
+		c.GCPercent = 100
 	}
 
 	c.DNSServer = strings.TrimSpace(c.DNSServer)

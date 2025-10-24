@@ -9,6 +9,9 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+
+	"github.com/yourusername/nitr0g3n/internal/dnspool"
+	"github.com/yourusername/nitr0g3n/internal/intern"
 )
 
 type dnsClientOptions struct {
@@ -100,7 +103,7 @@ func (c *dnsClient) LookupIPAddr(ctx context.Context, host string) ([]net.IPAddr
 		}
 	}
 
-	ips := make([]net.IPAddr, 0)
+	ips := make([]net.IPAddr, 0, len(qtypes)*2)
 	for _, qt := range qtypes {
 		for _, rr := range cached[qt] {
 			switch v := rr.(type) {
@@ -149,7 +152,7 @@ func (c *dnsClient) LookupCNAME(ctx context.Context, host string) (string, error
 		c.storeCache(normalized, dns.TypeCNAME, records, ttl)
 	}
 
-	target := strings.TrimSuffix(cname.Target, ".")
+	target := intern.Intern(strings.TrimSuffix(cname.Target, "."))
 	if target == "" || strings.EqualFold(target, normalized) {
 		return "", nil
 	}
@@ -171,7 +174,8 @@ func (c *dnsClient) LookupMX(ctx context.Context, host string) ([]*net.MX, error
 	mxRecords := make([]*net.MX, 0, len(records))
 	for _, rr := range records {
 		if mx, ok := rr.(*dns.MX); ok {
-			mxRecords = append(mxRecords, &net.MX{Host: strings.TrimSuffix(mx.Mx, "."), Pref: mx.Preference})
+			host := intern.Intern(strings.TrimSuffix(mx.Mx, "."))
+			mxRecords = append(mxRecords, &net.MX{Host: host, Pref: mx.Preference})
 		}
 	}
 
@@ -200,7 +204,7 @@ func (c *dnsClient) LookupTXT(ctx context.Context, host string) ([]string, error
 	values := make([]string, 0, len(records))
 	for _, rr := range records {
 		if txt, ok := rr.(*dns.TXT); ok {
-			values = append(values, strings.Join(txt.Txt, ""))
+			values = append(values, intern.Intern(strings.Join(txt.Txt, "")))
 		}
 	}
 
@@ -229,7 +233,8 @@ func (c *dnsClient) LookupNS(ctx context.Context, host string) ([]*net.NS, error
 	nsRecords := make([]*net.NS, 0, len(records))
 	for _, rr := range records {
 		if ns, ok := rr.(*dns.NS); ok {
-			nsRecords = append(nsRecords, &net.NS{Host: strings.TrimSuffix(ns.Ns, ".")})
+			host := intern.Intern(strings.TrimSuffix(ns.Ns, "."))
+			nsRecords = append(nsRecords, &net.NS{Host: host})
 		}
 	}
 
@@ -415,11 +420,12 @@ func (c *dnsClient) queryServerMulti(ctx context.Context, server, host string, q
 		default:
 		}
 
-		msg := new(dns.Msg)
+		msg := dnspool.AcquireMsg()
 		msg.SetQuestion(fqdn, qt)
 		msg.RecursionDesired = true
 
 		resp, err := c.exchange(ctx, conn, msg)
+		dnspool.ReleaseMsg(msg)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -501,7 +507,7 @@ func normalizeHost(host string) string {
 		return ""
 	}
 	fqdn := dns.Fqdn(host)
-	return strings.TrimSuffix(strings.ToLower(fqdn), ".")
+	return intern.Intern(strings.TrimSuffix(strings.ToLower(fqdn), "."))
 }
 
 func filterRecords(records []dns.RR, qtype uint16) []dns.RR {

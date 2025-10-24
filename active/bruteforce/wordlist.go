@@ -4,8 +4,11 @@ import (
 	"bufio"
 	"embed"
 	"io"
+	"io/fs"
 	"os"
 	"strings"
+
+	"github.com/yourusername/nitr0g3n/internal/intern"
 )
 
 //go:embed wordlists/top-1000.txt
@@ -37,13 +40,25 @@ func readWordlist(r io.Reader) []string {
 	scanner := bufio.NewScanner(r)
 	scanner.Split(bufio.ScanLines)
 
-	var words []string
+	capacity := 256
+	if statter, ok := r.(interface{ Stat() (fs.FileInfo, error) }); ok {
+		if info, err := statter.Stat(); err == nil {
+			if size := info.Size(); size > 0 {
+				estimate := int(size / 8)
+				if estimate > capacity {
+					capacity = estimate
+				}
+			}
+		}
+	}
+
+	words := make([]string, 0, capacity)
 	for scanner.Scan() {
 		word := strings.TrimSpace(scanner.Text())
 		if word == "" {
 			continue
 		}
-		words = append(words, word)
+		words = append(words, intern.Intern(word))
 	}
 
 	return words

@@ -12,6 +12,8 @@ import (
 
 	"github.com/miekg/dns"
 
+	"github.com/yourusername/nitr0g3n/internal/dnspool"
+	"github.com/yourusername/nitr0g3n/internal/intern"
 	"github.com/yourusername/nitr0g3n/ratelimit"
 )
 
@@ -34,7 +36,7 @@ func Run(ctx context.Context, opts Options) ([]Result, error) {
 		ctx = context.Background()
 	}
 
-	domain := strings.TrimSpace(strings.ToLower(opts.Domain))
+	domain := intern.Intern(strings.TrimSpace(strings.ToLower(opts.Domain)))
 	if domain == "" {
 		return nil, errors.New("domain is required")
 	}
@@ -91,10 +93,11 @@ func Run(ctx context.Context, opts Options) ([]Result, error) {
 			continue
 		}
 
-		request := new(dns.Msg)
+		request := dnspool.AcquireMsg()
 		request.SetAxfr(dns.Fqdn(domain))
 
 		records, err := attemptTransfer(transfer, request, addr)
+		dnspool.ReleaseMsg(request)
 		if err != nil {
 			logVerbose(opts, "zone transfer %s failed: %v", ns, err)
 			continue
@@ -114,10 +117,11 @@ func Run(ctx context.Context, opts Options) ([]Result, error) {
 }
 
 func lookupNS(ctx context.Context, client *dns.Client, server, domain string) ([]string, error) {
-	msg := new(dns.Msg)
+	msg := dnspool.AcquireMsg()
 	msg.SetQuestion(dns.Fqdn(domain), dns.TypeNS)
 
 	response, _, err := client.ExchangeContext(ctx, msg, server)
+	dnspool.ReleaseMsg(msg)
 	if err != nil {
 		return nil, fmt.Errorf("querying ns records: %w", err)
 	}
@@ -178,6 +182,7 @@ func addRecord(records map[string]map[string][]string, rr dns.RR) {
 	if recordType == "" {
 		recordType = fmt.Sprintf("TYPE%d", rr.Header().Rrtype)
 	}
+	recordType = intern.Intern(recordType)
 
 	value := recordValue(rr)
 	if value == "" {
@@ -195,33 +200,33 @@ func addRecord(records map[string]map[string][]string, rr dns.RR) {
 func recordValue(rr dns.RR) string {
 	switch v := rr.(type) {
 	case *dns.A:
-		return v.A.String()
+		return intern.Intern(v.A.String())
 	case *dns.AAAA:
-		return v.AAAA.String()
+		return intern.Intern(v.AAAA.String())
 	case *dns.CNAME:
 		return sanitizeName(v.Target)
 	case *dns.MX:
-		return fmt.Sprintf("%d %s", v.Preference, sanitizeName(v.Mx))
+		return intern.Intern(fmt.Sprintf("%d %s", v.Preference, sanitizeName(v.Mx)))
 	case *dns.NS:
 		return sanitizeName(v.Ns)
 	case *dns.SOA:
-		return fmt.Sprintf("%s %s %d %d %d %d %d",
-			sanitizeName(v.Ns), sanitizeName(v.Mbox), v.Serial, v.Refresh, v.Retry, v.Expire, v.Minttl)
+		return intern.Intern(fmt.Sprintf("%s %s %d %d %d %d %d",
+			sanitizeName(v.Ns), sanitizeName(v.Mbox), v.Serial, v.Refresh, v.Retry, v.Expire, v.Minttl))
 	case *dns.SRV:
-		return fmt.Sprintf("%d %d %d %s", v.Priority, v.Weight, v.Port, sanitizeName(v.Target))
+		return intern.Intern(fmt.Sprintf("%d %d %d %s", v.Priority, v.Weight, v.Port, sanitizeName(v.Target)))
 	case *dns.TXT:
-		return strings.Join(v.Txt, " ")
+		return intern.Intern(strings.Join(v.Txt, " "))
 	case *dns.CAA:
-		return fmt.Sprintf("%d %s %q", v.Flag, v.Tag, v.Value)
+		return intern.Intern(fmt.Sprintf("%d %s %q", v.Flag, v.Tag, v.Value))
 	default:
-		return strings.TrimSpace(rr.String())
+		return intern.Intern(strings.TrimSpace(rr.String()))
 	}
 }
 
 func sanitizeName(name string) string {
 	name = strings.TrimSpace(name)
 	name = strings.TrimSuffix(name, ".")
-	return strings.ToLower(name)
+	return intern.Intern(strings.ToLower(name))
 }
 
 func uniqueSorted(values []string) []string {
@@ -235,6 +240,7 @@ func uniqueSorted(values []string) []string {
 		if value == "" {
 			continue
 		}
+		value = intern.Intern(value)
 		if _, ok := seen[value]; ok {
 			continue
 		}

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"syscall"
@@ -74,6 +75,9 @@ infrastructure quickly and accurately.`,
 		if err := cfg.Validate(); err != nil {
 			return err
 		}
+
+		previousGC := debug.SetGCPercent(cfg.GCPercent)
+		defer debug.SetGCPercent(previousGC)
 
 		levelName := cfg.LogLevel
 		if cfg.Verbose && !cmd.Flags().Changed("log-level") {

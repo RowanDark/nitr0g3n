@@ -16,6 +16,8 @@ import (
 
 	"github.com/miekg/dns"
 
+	"github.com/yourusername/nitr0g3n/internal/dnspool"
+	"github.com/yourusername/nitr0g3n/internal/intern"
 	"github.com/yourusername/nitr0g3n/ratelimit"
 )
 
@@ -68,8 +70,15 @@ func Run(ctx context.Context, opts Options) ([]Result, error) {
 
 	hostnames := make([]string, 0, len(labels))
 	for _, label := range labels {
-		hostname := fmt.Sprintf("%s.%s", label, domain)
-		hostnames = append(hostnames, hostname)
+		if label == "" {
+			continue
+		}
+		var builder strings.Builder
+		builder.Grow(len(label) + 1 + len(domain))
+		builder.WriteString(label)
+		builder.WriteByte('.')
+		builder.WriteString(domain)
+		hostnames = append(hostnames, intern.Intern(builder.String()))
 	}
 
 	server, err := resolveServer(opts.DNSServer)
@@ -148,10 +157,14 @@ func Run(ctx context.Context, opts Options) ([]Result, error) {
 		close(metrics)
 	}()
 
-	var found []Result
-	seen := make(map[string]struct{})
+	estimated := len(hostnames) / 4
+	if estimated < 16 {
+		estimated = 16
+	}
+	found := make([]Result, 0, estimated)
+	seen := make(map[string]struct{}, len(hostnames))
 	for res := range results {
-		subdomain := strings.ToLower(strings.TrimSpace(res.Subdomain))
+		subdomain := intern.Intern(strings.ToLower(strings.TrimSpace(res.Subdomain)))
 		if subdomain == "" {
 			continue
 		}
@@ -159,6 +172,12 @@ func Run(ctx context.Context, opts Options) ([]Result, error) {
 			continue
 		}
 		seen[subdomain] = struct{}{}
+		res.Subdomain = subdomain
+		if len(res.Answers) > 0 {
+			for i := range res.Answers {
+				res.Answers[i] = intern.Intern(res.Answers[i])
+			}
+		}
 		found = append(found, res)
 	}
 
@@ -212,6 +231,7 @@ func buildLabels(words []string, permutations bool) []string {
 			if candidate == "" {
 				return
 			}
+			candidate = intern.Intern(candidate)
 			if _, exists := seen[candidate]; exists {
 				return
 			}
@@ -287,7 +307,9 @@ type queryMetric struct {
 }
 
 func queryHostname(ctx context.Context, client *dns.Client, server, hostname string) (Result, queryMetric, bool) {
-	msg := new(dns.Msg)
+	msg := dnspool.AcquireMsg()
+	defer dnspool.ReleaseMsg(msg)
+
 	msg.SetQuestion(dns.Fqdn(hostname), dns.TypeA)
 
 	start := time.Now()
@@ -299,7 +321,7 @@ func queryHostname(ctx context.Context, client *dns.Client, server, hostname str
 	}
 
 	res := Result{
-		Subdomain: hostname,
+		Subdomain: intern.Intern(hostname),
 		Rcode:     response.Rcode,
 	}
 
@@ -608,7 +630,7 @@ func dispatchBatch(ctx context.Context, jobs chan<- []string, batch []string, de
 	if len(batch) == 0 {
 		return true
 	}
-	payload := append([]string(nil), batch...)
+	payload := batch
 
 	for {
 		if ctx.Err() != nil {
@@ -653,13 +675,13 @@ func extractAnswers(msg *dns.Msg) []string {
 	for _, rr := range msg.Answer {
 		switch v := rr.(type) {
 		case *dns.A:
-			answers = append(answers, v.A.String())
+			answers = append(answers, intern.Intern(v.A.String()))
 		case *dns.AAAA:
-			answers = append(answers, v.AAAA.String())
+			answers = append(answers, intern.Intern(v.AAAA.String()))
 		case *dns.CNAME:
-			answers = append(answers, strings.TrimSuffix(v.Target, "."))
+			answers = append(answers, intern.Intern(strings.TrimSuffix(v.Target, ".")))
 		default:
-			answers = append(answers, v.String())
+			answers = append(answers, intern.Intern(v.String()))
 		}
 	}
 	return answers
