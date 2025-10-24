@@ -10,13 +10,13 @@ DNS bruteforcing and exports the resulting intelligence to local files or the
 nitr0g3n requires Go 1.21 or later. Install from source with:
 
 ```bash
-go install github.com/yourusername/nitr0g3n@latest
+go install github.com/RowanDark/nitr0g3n@latest
 ```
 
 Alternatively clone the repository and build the binary:
 
 ```bash
-git clone https://github.com/yourusername/nitr0g3n.git
+git clone https://github.com/RowanDark/nitr0g3n.git
 cd nitr0g3n
 go build ./...
 ```
@@ -75,7 +75,7 @@ tracking. Configure the exporter via:
 
 ```bash
 nitro --domain example.com \
-      --export-0xgen https://hub.0xg3n.local/api/v1/import \
+      --export-0xgen https://your-0xgen-hub.com/api/v1/import \
       --api-key $NITR0G3N_API_KEY
 ```
 
