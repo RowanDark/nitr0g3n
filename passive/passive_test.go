@@ -105,3 +105,38 @@ func TestAggregateStream(t *testing.T) {
 		t.Fatalf("expected beta.example.com to have two sources, got %+v", result.Subdomains)
 	}
 }
+
+func TestAggregateStreamParallelTiming(t *testing.T) {
+	ctx := context.Background()
+	slowDelay := 300 * time.Millisecond
+	fastDelay := 50 * time.Millisecond
+	sources := []Source{
+		&stubSource{name: "slow", subdomains: []string{"slow.example.com"}, delay: slowDelay},
+		&stubSource{name: "fast", subdomains: []string{"fast.example.com"}, delay: fastDelay},
+	}
+
+	events, waitFn := AggregateStream(ctx, "example.com", sources, Options{Parallel: true, SourceTimeout: 2 * time.Second})
+
+	start := time.Now()
+	var firstEvent time.Duration
+
+	for event := range events {
+		if event.Err != nil {
+			continue
+		}
+		if firstEvent == 0 {
+			firstEvent = time.Since(start)
+		}
+	}
+
+	waitFn()
+
+	if firstEvent == 0 {
+		t.Fatalf("expected at least one event to be received")
+	}
+
+	threshold := slowDelay / 2
+	if firstEvent >= threshold {
+		t.Fatalf("expected first event before %v, got %v", threshold, firstEvent)
+	}
+}
