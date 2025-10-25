@@ -28,31 +28,32 @@ const (
 
 // Config captures all runtime configuration for the CLI.
 type Config struct {
-	Domain        string
-	Mode          string
-	OutputPath    string
-	DiffPath      string
-	Verbose       bool
-	Silent        bool
-	ConfigPath    string
-	Profile       string
-	LogLevel      string
-	LogFile       string
-	Format        Format
-	JSONPretty    bool
-	Sources       []string
-	Threads       int
-	AutoTune      bool
-	DNSServer     string
-	DNSTimeout    time.Duration
-	DNSCache      bool
-	DNSCacheSize  int
-	Timeout       time.Duration
-	ShowAll       bool
-	WordlistPath  string
-	Permutations  bool
-	Watch         bool
-	WatchInterval time.Duration
+	Domain             string
+	Mode               string
+	OutputPath         string
+	DiffPath           string
+	Verbose            bool
+	Silent             bool
+	ConfigPath         string
+	Profile            string
+	LogLevel           string
+	LogFile            string
+	Format             Format
+	JSONPretty         bool
+	Sources            []string
+	Threads            int
+	AutoTune           bool
+	DNSServer          string
+	DNSTimeout         time.Duration
+	DNSCache           bool
+	DNSCacheSize       int
+	Timeout            time.Duration
+	ShowAll            bool
+	WordlistPath       string
+	Permutations       bool
+	PermutationThreads int
+	Watch              bool
+	WatchInterval      time.Duration
 
 	VirusTotalAPIKey string
 	FilterWildcards  bool
@@ -104,6 +105,7 @@ func BindFlags(cmd *cobra.Command) *Config {
 	flags.BoolVar(&cfg.ShowAll, "show-all", false, "Include subdomains without DNS records in the output")
 	flags.StringVar(&cfg.WordlistPath, "wordlist", "", "Path to a custom wordlist for active bruteforce enumeration")
 	flags.BoolVar(&cfg.Permutations, "permutations", true, "Enable wordlist permutations when bruteforcing")
+	flags.IntVar(&cfg.PermutationThreads, "permutation-threads", 0, "Number of threads for permutation generation (0 for auto)")
 	flags.BoolVar(&cfg.FilterWildcards, "filter-wildcards", true, "Filter wildcard DNS and generic CDN responses")
 	flags.StringSliceVar(&cfg.Scope, "scope", nil, "Restrict output to subdomains matching the provided glob patterns or TLD suffixes")
 	flags.BoolVar(&cfg.UniqueIPs, "unique-ips", false, "Only output subdomains that resolve to new unique IP addresses")
@@ -191,6 +193,10 @@ func (c *Config) Validate() error {
 
 	if c.Threads <= 0 {
 		c.Threads = 50
+	}
+
+	if c.PermutationThreads < 0 {
+		c.PermutationThreads = 0
 	}
 
 	if c.GCPercent <= 0 {

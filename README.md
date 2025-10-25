@@ -44,6 +44,7 @@ Commonly used flags include:
 | `--threads` | Concurrent DNS worker count for active mode. |
 | `--wordlist` | Custom wordlist path for bruteforce enumeration. |
 | `--permutations` | Enable/disable wordlist permutations (default: enabled). |
+| `--permutation-threads` | Number of threads to use when generating wordlist permutations (0 for automatic). |
 | `--probe` | Probe discovered hosts over HTTP/HTTPS, capturing banners and screenshots. |
 | `--screenshot-dir` | Directory to store generated probe screenshots. |
 | `--filter-wildcards` | Filter DNS wildcard and CDN responses. |

@@ -460,15 +460,16 @@ func runCycle(ctx context.Context, cfg *config.Config, logger *logging.Logger, l
 		progressWriter := logger.ConsoleWriter()
 
 		opts := bruteforce.Options{
-			Domain:         cfg.Domain,
-			WordlistPath:   cfg.WordlistPath,
-			Permutations:   cfg.Permutations,
-			DNSServer:      cfg.DNSServer,
-			Timeout:        cfg.DNSTimeout,
-			Workers:        cfg.Threads,
-			AutoTune:       cfg.AutoTune,
-			ProgressWriter: progressWriter,
-			RateLimiter:    limiter,
+			Domain:             cfg.Domain,
+			WordlistPath:       cfg.WordlistPath,
+			Permutations:       cfg.Permutations,
+			PermutationThreads: cfg.PermutationThreads,
+			DNSServer:          cfg.DNSServer,
+			Timeout:            cfg.DNSTimeout,
+			Workers:            cfg.Threads,
+			AutoTune:           cfg.AutoTune,
+			ProgressWriter:     progressWriter,
+			RateLimiter:        limiter,
 		}
 
 		results, err := bruteforce.Run(ctx, opts)

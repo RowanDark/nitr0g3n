@@ -104,7 +104,7 @@ func TestLoadWordsDefaults(t *testing.T) {
 }
 
 func TestBuildLabelsWithPermutations(t *testing.T) {
-	labels := buildLabels([]string{"admin"}, true)
+        labels := buildLabels([]string{"admin"}, true, 0)
 	if len(labels) == 0 {
 		t.Fatalf("expected labels to be generated")
 	}
