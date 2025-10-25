@@ -13,31 +13,21 @@ var msgPool = sync.Pool{
 }
 
 // AcquireMsg obtains a dns.Msg from the pool and resets it to a clean state.
+//
+//go:inline
 func AcquireMsg() *dns.Msg {
 	msg := msgPool.Get().(*dns.Msg)
-	resetMsg(msg)
+	resetMessage(msg)
 	return msg
 }
 
 // ReleaseMsg returns a dns.Msg to the pool after resetting its buffers.
+//
+//go:inline
 func ReleaseMsg(msg *dns.Msg) {
 	if msg == nil {
 		return
 	}
-	resetMsg(msg)
+	resetMessage(msg)
 	msgPool.Put(msg)
-}
-
-func resetMsg(msg *dns.Msg) {
-	if msg == nil {
-		return
-	}
-	msg.MsgHdr = dns.MsgHdr{}
-	msg.Question = msg.Question[:0]
-	msg.Answer = msg.Answer[:0]
-	msg.Ns = msg.Ns[:0]
-	msg.Extra = msg.Extra[:0]
-	msg.Compress = false
-	msg.RecursionDesired = false
-	msg.RecursionAvailable = false
 }

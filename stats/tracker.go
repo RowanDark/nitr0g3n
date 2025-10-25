@@ -96,6 +96,7 @@ func (t *Tracker) Stop() Snapshot {
 	return t.Snapshot()
 }
 
+//go:inline
 func (t *Tracker) RecordAttempt(resolved bool) {
 	if t == nil {
 		return
@@ -108,6 +109,7 @@ func (t *Tracker) RecordAttempt(resolved bool) {
 	t.mu.Unlock()
 }
 
+//go:inline
 func (t *Tracker) RecordDiscovery(sources []string) {
 	if t == nil {
 		return
@@ -154,6 +156,7 @@ func (t *Tracker) Snapshot() Snapshot {
 	}
 }
 
+//go:inline
 func (s Snapshot) ResolutionRate() float64 {
 	if s.Attempts == 0 {
 		return 0
@@ -161,6 +164,7 @@ func (s Snapshot) ResolutionRate() float64 {
 	return (float64(s.Resolved) / float64(s.Attempts)) * 100
 }
 
+//go:inline
 func (s Snapshot) ActivePassiveRatio() string {
 	return fmt.Sprintf("%d:%d", s.ActiveSources, s.PassiveSources)
 }

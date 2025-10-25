@@ -443,6 +443,7 @@ func (r *Resolver) acquire(ctx context.Context) error {
 	return r.limiter.Acquire(ctx)
 }
 
+//go:inline
 func uniqueSorted(values []string) []string {
 	if len(values) == 0 {
 		return values
@@ -465,16 +466,22 @@ func uniqueSorted(values []string) []string {
 }
 
 // Server returns the configured upstream DNS server address.
+//
+//go:inline
 func (r *Resolver) Server() string {
 	return r.server
 }
 
 // Timeout returns the configured per-query timeout duration.
+//
+//go:inline
 func (r *Resolver) Timeout() time.Duration {
 	return r.timeout
 }
 
 // ParseServer normalises DNS server host[:port] strings to host:port form.
+//
+//go:inline
 func ParseServer(address string) (string, error) {
 	address = strings.TrimSpace(address)
 	if address == "" {
@@ -528,6 +535,7 @@ func resolveServers(custom string) ([]string, error) {
 	return servers, nil
 }
 
+//go:inline
 func containsServer(servers []string, candidate string) bool {
 	for _, server := range servers {
 		if strings.EqualFold(server, candidate) {
