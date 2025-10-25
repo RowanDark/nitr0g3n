@@ -64,11 +64,15 @@ func DetectWildcard(ctx context.Context, r DNSResolver, domain string, samples i
 }
 
 // Active indicates whether the profile captured successful wildcard responses.
+//
+//go:inline
 func (p WildcardProfile) Active() bool {
 	return p.active
 }
 
 // Matches reports whether the provided DNS result aligns with the wildcard profile.
+//
+//go:inline
 func (p WildcardProfile) Matches(res resolver.Result) bool {
 	if !p.Active() {
 		return false
@@ -105,6 +109,8 @@ func (p WildcardProfile) Matches(res resolver.Result) bool {
 }
 
 // IsCDNResponse heuristically determines if DNS records likely point to a CDN.
+//
+//go:inline
 func IsCDNResponse(records map[string][]string) bool {
 	if len(records) == 0 {
 		return false
@@ -153,6 +159,7 @@ func IsCDNResponse(records map[string][]string) bool {
 	return false
 }
 
+//go:inline
 func randomLabel() string {
 	buf := make([]byte, 6)
 	if _, err := rand.Read(buf); err != nil {
