@@ -42,6 +42,7 @@ type profileSettings struct {
 	ShowAll             *bool          `yaml:"show_all"`
 	WordlistPath        *string        `yaml:"wordlist"`
 	Permutations        *bool          `yaml:"permutations"`
+	PermutationThreads  *int           `yaml:"permutation_threads"`
 	VirusTotalAPIKey    *string        `yaml:"virustotal_api_key"`
 	FilterWildcards     *bool          `yaml:"filter_wildcards"`
 	Scope               *StringSlice   `yaml:"scope"`
@@ -218,6 +219,9 @@ func applyProfileSettings(cfg *Config, profile *profileSettings, cmd *cobra.Comm
 	}
 	if profile.Permutations != nil && !flagChanged(flags, "permutations") {
 		cfg.Permutations = *profile.Permutations
+	}
+	if profile.PermutationThreads != nil && !flagChanged(flags, "permutation-threads") {
+		cfg.PermutationThreads = *profile.PermutationThreads
 	}
 	if profile.VirusTotalAPIKey != nil && !flagChanged(flags, "virustotal-api-key") {
 		cfg.VirusTotalAPIKey = strings.TrimSpace(*profile.VirusTotalAPIKey)

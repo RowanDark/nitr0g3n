@@ -8,7 +8,9 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -22,15 +24,16 @@ import (
 )
 
 type Options struct {
-	Domain         string
-	WordlistPath   string
-	Permutations   bool
-	DNSServer      string
-	Timeout        time.Duration
-	Workers        int
-	AutoTune       bool
-	ProgressWriter io.Writer
-	RateLimiter    *ratelimit.Limiter
+	Domain             string
+	WordlistPath       string
+	Permutations       bool
+	PermutationThreads int
+	DNSServer          string
+	Timeout            time.Duration
+	Workers            int
+	AutoTune           bool
+	ProgressWriter     io.Writer
+	RateLimiter        *ratelimit.Limiter
 }
 
 type Result struct {
@@ -43,6 +46,13 @@ const (
 	defaultBatchSize   = 100
 	minAutoTuneWorkers = 50
 	maxAutoTuneWorkers = 500
+	wordlistChunkSize  = 2048
+)
+
+var (
+	numberVariantsOnce  sync.Once
+	numberVariantsCache []string
+	permutationCache    sync.Map
 )
 
 func Run(ctx context.Context, opts Options) ([]Result, error) {
@@ -63,7 +73,7 @@ func Run(ctx context.Context, opts Options) ([]Result, error) {
 		return nil, fmt.Errorf("wordlist %q produced no entries", opts.WordlistPath)
 	}
 
-	labels := buildLabels(words, opts.Permutations)
+	labels := buildLabels(words, opts.Permutations, opts.PermutationThreads)
 	if len(labels) == 0 {
 		return nil, fmt.Errorf("wordlist %q produced no labels", opts.WordlistPath)
 	}
@@ -216,27 +226,93 @@ func loadWords(path string) ([]string, error) {
 	return words, nil
 }
 
-func buildLabels(words []string, permutations bool) []string {
-	seen := make(map[string]struct{}, len(words))
-	labels := make([]string, 0, len(words))
+func buildLabels(words []string, permutations bool, threads int) []string {
+	if len(words) == 0 {
+		return nil
+	}
+
+	if threads <= 0 {
+		threads = runtime.GOMAXPROCS(0)
+	}
+	if threads < 1 {
+		threads = 1
+	}
+
+	if threads == 1 || len(words) <= wordlistChunkSize {
+		chunk := processWordChunk(words, permutations)
+		return mergeLabelChunks([][]string{chunk})
+	}
+
+	chunks := chunkWords(words, wordlistChunkSize)
+	results := make([][]string, len(chunks))
+
+	var wg sync.WaitGroup
+	semaphore := make(chan struct{}, threads)
+
+	for idx, chunk := range chunks {
+		if len(chunk) == 0 {
+			continue
+		}
+		wg.Add(1)
+		go func(i int, items []string) {
+			defer wg.Done()
+			semaphore <- struct{}{}
+			defer func() { <-semaphore }()
+			results[i] = processWordChunk(items, permutations)
+		}(idx, chunk)
+	}
+
+	wg.Wait()
+
+	return mergeLabelChunks(results)
+}
+
+func chunkWords(words []string, size int) [][]string {
+	if size <= 0 {
+		size = wordlistChunkSize
+	}
+	total := len(words)
+	chunks := make([][]string, 0, (total+size-1)/size)
+	for start := 0; start < total; start += size {
+		end := start + size
+		if end > total {
+			end = total
+		}
+		chunks = append(chunks, words[start:end])
+	}
+	return chunks
+}
+
+func processWordChunk(words []string, permutations bool) []string {
+	if len(words) == 0 {
+		return nil
+	}
+
+	capacity := len(words)
+	if permutations {
+		capacity *= 5
+	}
+
+	labels := make([]string, 0, capacity)
+	seen := make(map[string]struct{}, capacity)
+
+	addLabel := func(candidate string) {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" {
+			return
+		}
+		candidate = intern.Intern(candidate)
+		if _, exists := seen[candidate]; exists {
+			return
+		}
+		seen[candidate] = struct{}{}
+		labels = append(labels, candidate)
+	}
 
 	for _, word := range words {
 		label := strings.ToLower(strings.TrimSpace(word))
 		if label == "" {
 			continue
-		}
-
-		addLabel := func(candidate string) {
-			candidate = strings.TrimSpace(candidate)
-			if candidate == "" {
-				return
-			}
-			candidate = intern.Intern(candidate)
-			if _, exists := seen[candidate]; exists {
-				return
-			}
-			seen[candidate] = struct{}{}
-			labels = append(labels, candidate)
 		}
 
 		addLabel(label)
@@ -250,9 +326,38 @@ func buildLabels(words []string, permutations bool) []string {
 	return labels
 }
 
+func mergeLabelChunks(chunks [][]string) []string {
+	estimated := 0
+	for _, chunk := range chunks {
+		estimated += len(chunk)
+	}
+
+	if estimated == 0 {
+		return nil
+	}
+
+	seen := make(map[string]struct{}, estimated)
+	labels := make([]string, 0, estimated)
+	for _, chunk := range chunks {
+		for _, candidate := range chunk {
+			if _, exists := seen[candidate]; exists {
+				continue
+			}
+			seen[candidate] = struct{}{}
+			labels = append(labels, candidate)
+		}
+	}
+
+	return labels
+}
+
 func permutationsFor(label string) []string {
-	var variants []string
+	if cached, ok := permutationCache.Load(label); ok {
+		return cached.([]string)
+	}
+
 	numbers := numberVariants()
+	variants := make([]string, 0, len(numbers)*4)
 	for _, num := range numbers {
 		variants = append(variants,
 			label+num,
@@ -261,18 +366,20 @@ func permutationsFor(label string) []string {
 			num+"-"+label,
 		)
 	}
+
+	permutationCache.Store(label, variants)
 	return variants
 }
 
 func numberVariants() []string {
-	variants := make([]string, 0, 110)
-	for i := 0; i <= 9; i++ {
-		variants = append(variants, fmt.Sprintf("%d", i))
-	}
-	for i := 10; i <= 99; i++ {
-		variants = append(variants, fmt.Sprintf("%d", i))
-	}
-	return variants
+	numberVariantsOnce.Do(func() {
+		variants := make([]string, 0, 100)
+		for i := 0; i <= 99; i++ {
+			variants = append(variants, strconv.Itoa(i))
+		}
+		numberVariantsCache = variants
+	})
+	return numberVariantsCache
 }
 
 func resolveServer(server string) (string, error) {
