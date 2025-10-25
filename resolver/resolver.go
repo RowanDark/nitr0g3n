@@ -221,6 +221,69 @@ func (r *Resolver) ResolveAll(ctx context.Context, hostnames []string, workers i
 	return output
 }
 
+// ResolveStream resolves hostnames received over the provided channel. The
+// stream closes once the input channel is exhausted and all workers finish.
+func (r *Resolver) ResolveStream(ctx context.Context, hostnames <-chan string, workers int) <-chan Result {
+	output := make(chan Result)
+	if hostnames == nil {
+		close(output)
+		return output
+	}
+	if workers <= 0 {
+		workers = 1
+	}
+
+	jobs := make(chan string)
+	var wg sync.WaitGroup
+
+	worker := func() {
+		defer wg.Done()
+		for hostname := range jobs {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+
+			res := r.Resolve(ctx, hostname)
+
+			select {
+			case output <- res:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}
+
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go worker()
+	}
+
+	go func() {
+		defer close(jobs)
+		for hostname := range hostnames {
+			hostname = strings.TrimSpace(hostname)
+			if hostname == "" {
+				continue
+			}
+
+			select {
+			case <-ctx.Done():
+				return
+			case jobs <- hostname:
+			}
+		}
+	}()
+
+	go func() {
+		wg.Wait()
+		close(output)
+	}()
+
+	return output
+}
+
 func (r *Resolver) lookupIPAddresses(ctx context.Context, hostname string) ([]string, []string, error) {
 	resolver := r.resolver
 	if resolver == nil {

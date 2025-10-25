@@ -3,7 +3,7 @@ package config
 import "testing"
 
 func TestValidateDefaults(t *testing.T) {
-	cfg := &Config{}
+	cfg := &Config{ParallelSources: true}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -18,6 +18,9 @@ func TestValidateDefaults(t *testing.T) {
 	}
 	if cfg.AutoTune {
 		t.Fatalf("expected auto-tune disabled by default")
+	}
+	if !cfg.ParallelSources {
+		t.Fatalf("expected parallel sources enabled by default")
 	}
 }
 

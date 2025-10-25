@@ -48,6 +48,7 @@ type profileSettings struct {
 	UniqueIPs           *bool          `yaml:"unique_ips"`
 	ProbeHTTP           *bool          `yaml:"probe"`
 	ScreenshotDir       *string        `yaml:"screenshot_dir"`
+	ParallelSources     *bool          `yaml:"parallel_sources"`
 	Export0xGenEndpoint *string        `yaml:"export_0xgen"`
 	APIKey              *string        `yaml:"api_key"`
 	RateLimit           *float64       `yaml:"rate_limit"`
@@ -235,6 +236,9 @@ func applyProfileSettings(cfg *Config, profile *profileSettings, cmd *cobra.Comm
 	}
 	if profile.ScreenshotDir != nil && !flagChanged(flags, "screenshot-dir") {
 		cfg.ScreenshotDir = strings.TrimSpace(*profile.ScreenshotDir)
+	}
+	if profile.ParallelSources != nil && !flagChanged(flags, "parallel-sources") {
+		cfg.ParallelSources = *profile.ParallelSources
 	}
 	if profile.Export0xGenEndpoint != nil && !flagChanged(flags, "export-0xgen") {
 		cfg.Export0xGenEndpoint = strings.TrimSpace(*profile.Export0xGenEndpoint)

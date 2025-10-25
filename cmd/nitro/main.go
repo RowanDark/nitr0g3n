@@ -13,6 +13,7 @@ import (
 	"runtime/debug"
 	"sort"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -335,7 +336,9 @@ func runDomain(ctx context.Context, cfg *config.Config, logger *logging.Logger, 
 
 func runCycle(ctx context.Context, cfg *config.Config, logger *logging.Logger, limiter *ratelimit.Limiter, httpClient *http.Client, writer *output.Writer, exporter *oxg3n.Exporter, diffBaseline map[string]output.Record, diffRemaining map[string]output.Record, diffStats *diffSummary, watchKnown map[string]output.Record, notifier *webhook.Notifier, tracker *stats.Tracker, verboseEnabled bool) error {
 	subdomainSources := make(map[string][]string)
+	var subdomainSourcesMu sync.RWMutex
 	zoneRecords := make(map[string]map[string][]string)
+	totalDiscovered := 0
 
 	if cfg.Mode == config.ModePassive || cfg.Mode == config.ModeAll {
 		passiveSources, err := buildPassiveSources(cfg, httpClient)
@@ -343,18 +346,91 @@ func runCycle(ctx context.Context, cfg *config.Config, logger *logging.Logger, l
 			return err
 		}
 
-		aggregation := passive.Aggregate(ctx, cfg.Domain, passiveSources)
-		if len(aggregation.Errors) > 0 {
-			for name, sourceErr := range aggregation.Errors {
-				logger.Warnf("Passive source %s error: %v", name, sourceErr)
-			}
+		resolveOpts := resolver.Options{
+			Server:       cfg.DNSServer,
+			Timeout:      cfg.DNSTimeout,
+			RateLimiter:  limiter,
+			CacheEnabled: cfg.DNSCache,
+			CacheSize:    cfg.DNSCacheSize,
+		}
+		dnsResolver, err := resolver.New(resolveOpts)
+		if err != nil {
+			return fmt.Errorf("configuring resolver: %w", err)
 		}
 
-		for subdomain, sources := range aggregation.Subdomains {
-			for _, source := range sources {
-				addSource(subdomainSources, subdomain, source)
+		hostnamesCh := make(chan string)
+		resultsCh := dnsResolver.ResolveStream(ctx, hostnamesCh, cfg.Threads)
+
+		passiveEvents, waitFn := passive.AggregateStream(ctx, cfg.Domain, passiveSources, passive.Options{Parallel: cfg.ParallelSources, SourceTimeout: 30 * time.Second})
+
+		var passiveWG sync.WaitGroup
+		passiveWG.Add(1)
+		go func() {
+			defer passiveWG.Done()
+			defer close(hostnamesCh)
+
+			seen := make(map[string]struct{})
+			loggedErrors := make(map[string]struct{})
+
+			for event := range passiveEvents {
+				if event.Err != nil {
+					source := event.Source
+					if source == "" {
+						source = "unknown"
+					}
+					if _, logged := loggedErrors[source]; !logged {
+						logger.Warnf("Passive source %s error: %v", source, event.Err)
+						loggedErrors[source] = struct{}{}
+					}
+					continue
+				}
+
+				subdomain := strings.TrimSpace(event.Subdomain)
+				if subdomain == "" {
+					continue
+				}
+
+				sourceName := strings.TrimSpace(event.Source)
+				if sourceName == "" {
+					sourceName = "unknown"
+				}
+
+				subdomain = strings.ToLower(subdomain)
+
+				subdomainSourcesMu.Lock()
+				addSource(subdomainSources, subdomain, sourceName)
+				subdomainSourcesMu.Unlock()
+
+				if _, exists := seen[subdomain]; !exists {
+					seen[subdomain] = struct{}{}
+					select {
+					case <-ctx.Done():
+						return
+					case hostnamesCh <- subdomain:
+					}
+				}
 			}
+
+			summary := waitFn()
+			for name, sourceErr := range summary.Errors {
+				if name == "" || sourceErr == nil {
+					continue
+				}
+				if _, logged := loggedErrors[name]; logged {
+					continue
+				}
+				logger.Warnf("Passive source %s error: %v", name, sourceErr)
+			}
+		}()
+
+		count, err := processResolutions(ctx, cfg, logger, writer, exporter, diffBaseline, diffRemaining, diffStats, watchKnown, notifier, tracker, verboseEnabled, subdomainSources, &subdomainSourcesMu, zoneRecords, dnsResolver, limiter, resultsCh)
+		if err != nil {
+			passiveWG.Wait()
+			return err
 		}
+
+		totalDiscovered += count
+		passiveWG.Wait()
 	}
 
 	if cfg.Mode == config.ModeActive || cfg.Mode == config.ModeAll {
@@ -374,7 +450,9 @@ func runCycle(ctx context.Context, cfg *config.Config, logger *logging.Logger, l
 
 		for _, transfer := range transfers {
 			for hostname := range transfer.Records {
+				subdomainSourcesMu.Lock()
 				addSource(subdomainSources, hostname, "active:zonetransfer")
+				subdomainSourcesMu.Unlock()
 			}
 			mergeZoneRecords(zoneRecords, transfer.Records)
 		}
@@ -399,43 +477,72 @@ func runCycle(ctx context.Context, cfg *config.Config, logger *logging.Logger, l
 		}
 
 		for _, res := range results {
+			subdomainSourcesMu.Lock()
 			addSource(subdomainSources, res.Subdomain, "active:bruteforce")
+			subdomainSourcesMu.Unlock()
+		}
+
+		if len(subdomainSources) > 0 {
+			subdomains := make([]string, 0, len(subdomainSources))
+			for subdomain := range subdomainSources {
+				subdomains = append(subdomains, subdomain)
+			}
+			sort.Strings(subdomains)
+
+			resolveOpts := resolver.Options{
+				Server:       cfg.DNSServer,
+				Timeout:      cfg.DNSTimeout,
+				RateLimiter:  limiter,
+				CacheEnabled: cfg.DNSCache,
+				CacheSize:    cfg.DNSCacheSize,
+			}
+			dnsResolver, err := resolver.New(resolveOpts)
+			if err != nil {
+				return fmt.Errorf("configuring resolver: %w", err)
+			}
+
+			resultsCh := dnsResolver.ResolveAll(ctx, subdomains, cfg.Threads)
+
+			count, err := processResolutions(ctx, cfg, logger, writer, exporter, diffBaseline, diffRemaining, diffStats, watchKnown, notifier, tracker, verboseEnabled, subdomainSources, &subdomainSourcesMu, zoneRecords, dnsResolver, limiter, resultsCh)
+			if err != nil {
+				return err
+			}
+			totalDiscovered += count
+		} else if totalDiscovered == 0 {
+			logger.Infof("No subdomains discovered for %s", cfg.Domain)
+		}
+	} else if totalDiscovered == 0 {
+		logger.Infof("No subdomains discovered for %s", cfg.Domain)
+	}
+
+	if exporter != nil {
+		if err := flushExporter(ctx, cfg, logger, exporter); err != nil {
+			return err
 		}
 	}
 
-	if len(subdomainSources) == 0 {
-		logger.Infof("No subdomains discovered for %s", cfg.Domain)
-		return flushExporter(ctx, cfg, logger, exporter)
+	if err := ctx.Err(); err != nil && !errors.Is(err, context.Canceled) {
+		return err
 	}
 
-	subdomains := make([]string, 0, len(subdomainSources))
-	for subdomain := range subdomainSources {
-		subdomains = append(subdomains, subdomain)
-	}
-	sort.Strings(subdomains)
+	return nil
+}
 
-	resolveOpts := resolver.Options{
-		Server:       cfg.DNSServer,
-		Timeout:      cfg.DNSTimeout,
-		RateLimiter:  limiter,
-		CacheEnabled: cfg.DNSCache,
-		CacheSize:    cfg.DNSCacheSize,
+func processResolutions(ctx context.Context, cfg *config.Config, logger *logging.Logger, writer *output.Writer, exporter *oxg3n.Exporter, diffBaseline map[string]output.Record, diffRemaining map[string]output.Record, diffStats *diffSummary, watchKnown map[string]output.Record, notifier *webhook.Notifier, tracker *stats.Tracker, verboseEnabled bool, subdomainSources map[string][]string, subdomainSourcesMu *sync.RWMutex, zoneRecords map[string]map[string][]string, dnsResolver *resolver.Resolver, limiter *ratelimit.Limiter, resultsCh <-chan resolver.Result) (int, error) {
+	if resultsCh == nil {
+		return 0, nil
 	}
-	dnsResolver, err := resolver.New(resolveOpts)
-	if err != nil {
-		return fmt.Errorf("configuring resolver: %w", err)
-	}
-
-	resultsCh := dnsResolver.ResolveAll(ctx, subdomains, cfg.Threads)
 
 	var wildcardProfile filters.WildcardProfile
-	if cfg.FilterWildcards {
+	if cfg.FilterWildcards && dnsResolver != nil {
 		profile, err := filters.DetectWildcard(ctx, dnsResolver, cfg.Domain, 3)
 		if err != nil {
-			logger.Warnf("Wildcard detection error: %v", err)
+			if logger != nil {
+				logger.Warnf("Wildcard detection error: %v", err)
+			}
 		} else {
 			wildcardProfile = profile
-			if wildcardProfile.Active() {
+			if wildcardProfile.Active() && logger != nil {
 				logger.Infof("Wildcard DNS detected; matching resolutions will be filtered")
 			}
 		}
@@ -451,13 +558,18 @@ func runCycle(ctx context.Context, cfg *config.Config, logger *logging.Logger, l
 		seenIPs = nil
 	}
 
+	total := 0
+
 	for resolution := range resultsCh {
 		subdomain := resolution.Subdomain
 		if subdomain == "" {
 			continue
 		}
 
+		subdomainSourcesMu.RLock()
 		sources := append([]string(nil), subdomainSources[subdomain]...)
+		subdomainSourcesMu.RUnlock()
+
 		mergedIPs, mergedRecords := mergeResolution(resolution, zoneRecords[subdomain])
 		resolved := len(mergedIPs) > 0 || len(mergedRecords) > 0
 		if tracker != nil {
@@ -468,7 +580,7 @@ func runCycle(ctx context.Context, cfg *config.Config, logger *logging.Logger, l
 		normalized.Subdomain = strings.ToLower(strings.TrimSpace(subdomain))
 
 		if cfg.FilterWildcards && wildcardProfile.Active() && wildcardProfile.Matches(resolution) {
-			if verboseEnabled {
+			if verboseEnabled && logger != nil {
 				logger.Debugf("Skipping wildcard subdomain: %s", subdomain)
 			}
 			if diffRemaining != nil && normalized.Subdomain != "" {
@@ -478,7 +590,9 @@ func runCycle(ctx context.Context, cfg *config.Config, logger *logging.Logger, l
 		}
 
 		if !cfg.ShowAll && len(mergedIPs) == 0 && len(mergedRecords) == 0 {
+			subdomainSourcesMu.Lock()
 			delete(subdomainSources, subdomain)
+			subdomainSourcesMu.Unlock()
 			delete(zoneRecords, subdomain)
 			if diffRemaining != nil && normalized.Subdomain != "" {
 				delete(diffRemaining, normalized.Subdomain)
@@ -486,15 +600,17 @@ func runCycle(ctx context.Context, cfg *config.Config, logger *logging.Logger, l
 			continue
 		}
 
-		if resolution.Err != nil {
+		if resolution.Err != nil && logger != nil {
 			logger.Warnf("DNS resolution %s error: %v", subdomain, resolution.Err)
 		}
 
 		if cfg.FilterWildcards && filters.IsCDNResponse(mergedRecords) {
-			if verboseEnabled {
+			if verboseEnabled && logger != nil {
 				logger.Debugf("Skipping CDN-derived subdomain: %s", subdomain)
 			}
+			subdomainSourcesMu.Lock()
 			delete(subdomainSources, subdomain)
+			subdomainSourcesMu.Unlock()
 			delete(zoneRecords, subdomain)
 			if diffRemaining != nil && normalized.Subdomain != "" {
 				delete(diffRemaining, normalized.Subdomain)
@@ -503,10 +619,12 @@ func runCycle(ctx context.Context, cfg *config.Config, logger *logging.Logger, l
 		}
 
 		if len(cfg.Scope) > 0 && !matchesScope(subdomain, cfg.Scope) {
-			if verboseEnabled {
+			if verboseEnabled && logger != nil {
 				logger.Debugf("Skipping subdomain outside scope: %s", subdomain)
 			}
+			subdomainSourcesMu.Lock()
 			delete(subdomainSources, subdomain)
+			subdomainSourcesMu.Unlock()
 			delete(zoneRecords, subdomain)
 			if diffRemaining != nil && normalized.Subdomain != "" {
 				delete(diffRemaining, normalized.Subdomain)
@@ -517,7 +635,9 @@ func runCycle(ctx context.Context, cfg *config.Config, logger *logging.Logger, l
 		if cfg.UniqueIPs {
 			mergedIPs, mergedRecords = filterUniqueIPs(mergedIPs, mergedRecords, seenIPs)
 			if len(mergedIPs) == 0 {
+				subdomainSourcesMu.Lock()
 				delete(subdomainSources, subdomain)
+				subdomainSourcesMu.Unlock()
 				delete(zoneRecords, subdomain)
 				if diffRemaining != nil && normalized.Subdomain != "" {
 					delete(diffRemaining, normalized.Subdomain)
@@ -577,8 +697,9 @@ func runCycle(ctx context.Context, cfg *config.Config, logger *logging.Logger, l
 		}
 
 		if err := writer.WriteRecord(record); err != nil {
-			return fmt.Errorf("writing record: %w", err)
+			return total, fmt.Errorf("writing record: %w", err)
 		}
+		total++
 
 		if tracker != nil {
 			tracker.RecordDiscovery(sources)
@@ -586,13 +707,13 @@ func runCycle(ctx context.Context, cfg *config.Config, logger *logging.Logger, l
 
 		if exporter != nil {
 			if err := exporter.AddRecord(ctx, record); err != nil {
-				return fmt.Errorf("exporting to 0xg3n: %w", err)
+				return total, fmt.Errorf("exporting to 0xg3n: %w", err)
 			}
 		}
 
 		if notifier != nil {
 			if err := notifier.Notify(ctx, cfg.Domain, record); err != nil {
-				return fmt.Errorf("sending webhook notification: %w", err)
+				return total, fmt.Errorf("sending webhook notification: %w", err)
 			}
 		}
 
@@ -603,21 +724,13 @@ func runCycle(ctx context.Context, cfg *config.Config, logger *logging.Logger, l
 			diffBaseline[normalized.Subdomain] = normalized
 		}
 
+		subdomainSourcesMu.Lock()
 		delete(subdomainSources, subdomain)
+		subdomainSourcesMu.Unlock()
 		delete(zoneRecords, subdomain)
 	}
 
-	if exporter != nil {
-		if err := flushExporter(ctx, cfg, logger, exporter); err != nil {
-			return err
-		}
-	}
-
-	if err := ctx.Err(); err != nil && !errors.Is(err, context.Canceled) {
-		return err
-	}
-
-	return nil
+	return total, nil
 }
 
 func flushExporter(ctx context.Context, cfg *config.Config, logger *logging.Logger, exporter *oxg3n.Exporter) error {
