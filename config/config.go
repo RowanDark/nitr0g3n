@@ -60,6 +60,7 @@ type Config struct {
 	UniqueIPs        bool
 	ProbeHTTP        bool
 	ScreenshotDir    string
+	ParallelSources  bool
 
 	Export0xGenEndpoint string
 	APIKey              string
@@ -114,6 +115,8 @@ func BindFlags(cmd *cobra.Command) *Config {
 	flags.StringVar(&cfg.WebhookSecret, "webhook-secret", "", "Optional secret used to sign webhook payloads")
 	flags.Float64Var(&cfg.RateLimit, "rate-limit", 0, "Maximum number of outbound requests per second (0 for unlimited)")
 	flags.IntVar(&cfg.GCPercent, "gc-percent", 100, "Set the Go runtime GC target percentage")
+	cfg.ParallelSources = true
+	flags.BoolVar(&cfg.ParallelSources, "parallel-sources", cfg.ParallelSources, "Execute passive sources concurrently")
 
 	return cfg
 }
