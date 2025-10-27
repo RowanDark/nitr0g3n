@@ -1,0 +1,13 @@
+scenarios:
+  - name: Example.com passive baseline
+    domain: example.com
+    mode: passive
+    description: Baseline passive discovery run against example.com
+  - name: Google.com passive baseline
+    domain: google.com
+    mode: passive
+    description: Baseline passive discovery run against google.com
+  - name: GitHub.com passive baseline
+    domain: github.com
+    mode: passive
+    description: Baseline passive discovery run against github.com
