@@ -4,7 +4,10 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"net"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/yourusername/nitr0g3n/resolver"
@@ -17,49 +20,119 @@ type DNSResolver interface {
 
 // WildcardProfile represents the DNS records observed for wildcard responses.
 type WildcardProfile struct {
-	active bool
-	ips    map[string]struct{}
-	cnames map[string]struct{}
+	active       bool
+	ips          map[string]struct{}
+	ipv4Prefixes map[string]struct{}
+	ipv6Prefixes map[string]struct{}
+	cnames       map[string]struct{}
 }
 
+var wildcardCache sync.Map
+
 // DetectWildcard probes random subdomains to identify wildcard DNS behaviour.
-func DetectWildcard(ctx context.Context, r DNSResolver, domain string, samples int) (WildcardProfile, error) {
+func DetectWildcard(ctx context.Context, r DNSResolver, domain string, samples, batch int) (WildcardProfile, error) {
 	profile := WildcardProfile{}
-	if r == nil || strings.TrimSpace(domain) == "" {
+	domain = strings.ToLower(strings.TrimSpace(domain))
+	if r == nil || domain == "" {
 		return profile, nil
 	}
-	if samples <= 0 {
+
+	if cached, ok := wildcardCache.Load(domain); ok {
+		return cached.(WildcardProfile), nil
+	}
+
+	if samples < 3 {
 		samples = 3
+	} else if samples > 5 {
+		samples = 5
+	}
+	if batch <= 0 {
+		batch = samples
+	}
+	if batch > samples {
+		batch = samples
 	}
 
 	ips := make(map[string]struct{})
+	ipv4Prefixes := make(map[string]struct{})
+	ipv6Prefixes := make(map[string]struct{})
 	cnames := make(map[string]struct{})
-	successCount := 0
 
-	for i := 0; i < samples; i++ {
+	results := make(chan resolver.Result, samples)
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, batch)
+
+	launchQuery := func() {
+		defer wg.Done()
 		hostname := randomLabel() + "." + domain
 		res := r.Resolve(ctx, hostname)
 		if len(res.IPAddresses) == 0 && len(res.DNSRecords) == 0 {
-			continue
+			return
 		}
+		results <- res
+	}
+
+Loop:
+	for i := 0; i < samples; i++ {
+		if ctx != nil {
+			select {
+			case <-ctx.Done():
+				break Loop
+			default:
+			}
+		}
+		wg.Add(1)
+		sem <- struct{}{}
+		go func() {
+			defer func() { <-sem }()
+			launchQuery()
+		}()
+	}
+
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	successCount := 0
+	for res := range results {
 		successCount++
 		for _, ip := range res.IPAddresses {
-			ips[strings.TrimSpace(ip)] = struct{}{}
+			trimmed := strings.TrimSpace(ip)
+			if trimmed == "" {
+				continue
+			}
+			ips[trimmed] = struct{}{}
+			if prefix := ipv4Prefix(trimmed); prefix != "" {
+				ipv4Prefixes[prefix] = struct{}{}
+			}
+			if prefix := ipv6Prefix(trimmed); prefix != "" {
+				ipv6Prefixes[prefix] = struct{}{}
+			}
 		}
 		if cn, ok := res.DNSRecords["CNAME"]; ok {
 			for _, value := range cn {
-				cnames[strings.ToLower(strings.TrimSpace(value))] = struct{}{}
+				cleaned := strings.ToLower(strings.TrimSpace(value))
+				if cleaned == "" {
+					continue
+				}
+				cnames[cleaned] = struct{}{}
 			}
 		}
 	}
 
 	if successCount == 0 {
+		wildcardCache.Store(domain, profile)
 		return profile, nil
 	}
 
 	profile.active = true
 	profile.ips = ips
+	profile.ipv4Prefixes = ipv4Prefixes
+	profile.ipv6Prefixes = ipv6Prefixes
 	profile.cnames = cnames
+
+	wildcardCache.Store(domain, profile)
 	return profile, nil
 }
 
@@ -77,20 +150,29 @@ func (p WildcardProfile) Matches(res resolver.Result) bool {
 	if !p.Active() {
 		return false
 	}
-	if len(p.ips) == 0 && len(p.cnames) == 0 {
+	if len(p.ips) == 0 && len(p.cnames) == 0 && len(p.ipv4Prefixes) == 0 && len(p.ipv6Prefixes) == 0 {
 		return false
 	}
 
-	if len(p.ips) > 0 {
-		matched := true
+	if len(p.ips) > 0 || len(p.ipv4Prefixes) > 0 || len(p.ipv6Prefixes) > 0 {
 		for _, ip := range res.IPAddresses {
-			if _, ok := p.ips[strings.TrimSpace(ip)]; !ok {
-				matched = false
-				break
+			trimmed := strings.TrimSpace(ip)
+			if trimmed == "" {
+				continue
 			}
-		}
-		if matched && len(res.IPAddresses) > 0 {
-			return true
+			if _, ok := p.ips[trimmed]; ok {
+				return true
+			}
+			if prefix := ipv4Prefix(trimmed); prefix != "" {
+				if _, ok := p.ipv4Prefixes[prefix]; ok {
+					return true
+				}
+			}
+			if prefix := ipv6Prefix(trimmed); prefix != "" {
+				if _, ok := p.ipv6Prefixes[prefix]; ok {
+					return true
+				}
+			}
 		}
 	}
 
@@ -166,4 +248,35 @@ func randomLabel() string {
 		return strings.ToLower(time.Now().UTC().Format("150405"))
 	}
 	return hex.EncodeToString(buf)
+}
+
+func ipv4Prefix(ip string) string {
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		return ""
+	}
+	v4 := parsed.To4()
+	if v4 == nil {
+		return ""
+	}
+	return strings.Join([]string{strconv.Itoa(int(v4[0])), strconv.Itoa(int(v4[1])), strconv.Itoa(int(v4[2]))}, ".")
+}
+
+func ipv6Prefix(ip string) string {
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		return ""
+	}
+	if parsed.To4() != nil {
+		return ""
+	}
+	parsed = parsed.To16()
+	if parsed == nil {
+		return ""
+	}
+	return hex.EncodeToString(parsed[:8])
+}
+
+func resetWildcardCache() {
+	wildcardCache = sync.Map{}
 }

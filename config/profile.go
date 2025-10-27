@@ -45,6 +45,7 @@ type profileSettings struct {
 	PermutationThreads  *int           `yaml:"permutation_threads"`
 	VirusTotalAPIKey    *string        `yaml:"virustotal_api_key"`
 	FilterWildcards     *bool          `yaml:"filter_wildcards"`
+	SkipWildcards       *bool          `yaml:"skip_wildcards"`
 	Scope               *StringSlice   `yaml:"scope"`
 	UniqueIPs           *bool          `yaml:"unique_ips"`
 	ProbeHTTP           *bool          `yaml:"probe"`
@@ -54,6 +55,7 @@ type profileSettings struct {
 	APIKey              *string        `yaml:"api_key"`
 	RateLimit           *float64       `yaml:"rate_limit"`
 	GCPercent           *int           `yaml:"gc_percent"`
+	WildcardBatch       *int           `yaml:"wildcard_batch"`
 }
 
 type StringSlice []string
@@ -229,6 +231,9 @@ func applyProfileSettings(cfg *Config, profile *profileSettings, cmd *cobra.Comm
 	if profile.FilterWildcards != nil && !flagChanged(flags, "filter-wildcards") {
 		cfg.FilterWildcards = *profile.FilterWildcards
 	}
+	if profile.SkipWildcards != nil && !flagChanged(flags, "skip-wildcards") {
+		cfg.SkipWildcards = *profile.SkipWildcards
+	}
 	if profile.Scope != nil && !flagChanged(flags, "scope") {
 		cfg.Scope = profile.Scope.ToSlice()
 	}
@@ -255,6 +260,9 @@ func applyProfileSettings(cfg *Config, profile *profileSettings, cmd *cobra.Comm
 	}
 	if profile.GCPercent != nil && !flagChanged(flags, "gc-percent") {
 		cfg.GCPercent = *profile.GCPercent
+	}
+	if profile.WildcardBatch != nil && !flagChanged(flags, "wildcard-batch") {
+		cfg.WildcardBatch = *profile.WildcardBatch
 	}
 }
 

@@ -48,6 +48,8 @@ Commonly used flags include:
 | `--probe` | Probe discovered hosts over HTTP/HTTPS, capturing banners and screenshots. |
 | `--screenshot-dir` | Directory to store generated probe screenshots. |
 | `--filter-wildcards` | Filter DNS wildcard and CDN responses. |
+| `--skip-wildcards` | Skip enumeration entirely when wildcard DNS responses are detected. |
+| `--wildcard-batch` | Number of concurrent DNS queries used while detecting wildcard responses (default: 3). |
 | `--export-0xgen` | 0xg3n hub endpoint to export findings. |
 | `--api-key` | API key for authenticated exports and VirusTotal usage. |
 | `--webhook` | Webhook endpoint that receives JSON notifications for each discovery. |
