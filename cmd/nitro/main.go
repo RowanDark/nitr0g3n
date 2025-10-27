@@ -10,7 +10,9 @@ import (
 	"os"
 	"os/signal"
 	"path"
+	"runtime"
 	"runtime/debug"
+	"runtime/pprof"
 	"sort"
 	"strings"
 	"sync"
@@ -100,6 +102,44 @@ infrastructure quickly and accurately.`,
 			return err
 		}
 		defer logger.Close()
+
+		if cfg.CPUProfile != "" {
+			file, err := os.Create(cfg.CPUProfile)
+			if err != nil {
+				return fmt.Errorf("creating CPU profile file %s: %w", cfg.CPUProfile, err)
+			}
+			if err := pprof.StartCPUProfile(file); err != nil {
+				_ = file.Close()
+				return fmt.Errorf("starting CPU profile: %w", err)
+			}
+			logger.Infof("CPU profiling enabled; writing profile data to %s", cfg.CPUProfile)
+			defer func(path string, f *os.File) {
+				pprof.StopCPUProfile()
+				if err := f.Close(); err != nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "error closing CPU profile file %s: %v\n", path, err)
+					return
+				}
+				logger.Infof("CPU profile written to %s", path)
+			}(cfg.CPUProfile, file)
+		}
+
+		if cfg.MemProfile != "" {
+			logger.Infof("Memory profiling enabled; heap profile will be written to %s", cfg.MemProfile)
+			defer func(path string) {
+				file, err := os.Create(path)
+				if err != nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "creating memory profile file %s: %v\n", path, err)
+					return
+				}
+				defer file.Close()
+				runtime.GC()
+				if err := pprof.WriteHeapProfile(file); err != nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "writing memory profile to %s: %v\n", path, err)
+					return
+				}
+				logger.Infof("Memory profile written to %s", path)
+			}(cfg.MemProfile)
+		}
 
 		verboseEnabled := cfg.Verbose || level <= logging.LevelDebug
 

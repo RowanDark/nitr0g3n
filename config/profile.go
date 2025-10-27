@@ -25,6 +25,8 @@ type profileSettings struct {
 	Mode                *string        `yaml:"mode"`
 	OutputPath          *string        `yaml:"output"`
 	DiffPath            *string        `yaml:"diff"`
+	CPUProfile          *string        `yaml:"cpu_profile"`
+	MemProfile          *string        `yaml:"mem_profile"`
 	Verbose             *bool          `yaml:"verbose"`
 	Silent              *bool          `yaml:"silent"`
 	LogLevel            *string        `yaml:"log_level"`
@@ -170,6 +172,12 @@ func applyProfileSettings(cfg *Config, profile *profileSettings, cmd *cobra.Comm
 	}
 	if profile.DiffPath != nil && !flagChanged(flags, "diff") {
 		cfg.DiffPath = strings.TrimSpace(*profile.DiffPath)
+	}
+	if profile.CPUProfile != nil && !flagChanged(flags, "cpuprofile") {
+		cfg.CPUProfile = strings.TrimSpace(*profile.CPUProfile)
+	}
+	if profile.MemProfile != nil && !flagChanged(flags, "memprofile") {
+		cfg.MemProfile = strings.TrimSpace(*profile.MemProfile)
 	}
 	if profile.Verbose != nil && !flagChanged(flags, "verbose") {
 		cfg.Verbose = *profile.Verbose

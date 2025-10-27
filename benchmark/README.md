@@ -35,6 +35,21 @@ under `benchmark/results/`. Metrics captured include:
 
 Graphs are written as PNG files alongside the JSON summary.
 
+### Comparing Runs
+
+To validate performance changes, compare a new run against a saved baseline
+report. The comparison output highlights metric deltas and flags regressions:
+
+```bash
+python benchmark/run_benchmarks.py \
+  --output benchmark/results/latest.json \
+  --baseline benchmark/results/baseline.json \
+  --comparison-output benchmark/results/compare.json
+```
+
+If `--comparison-output` is omitted, the summary defaults to
+`benchmark/results/comparison.json`.
+
 ### Offline Fixtures
 
 Live benchmarking requires internet access. For CI or offline development you
