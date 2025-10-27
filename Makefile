@@ -1,46 +1,68 @@
-SHELL := /bin/bash
+.PHONY: install build test clean help install-local run
 
-BINARY_NAME := nitro
-CMD_PATH := ./cmd/nitro
-BIN_DIR := bin
-BUILD_DIR := build
-PROFILE := $(BUILD_DIR)/cpu.prof
+# Default Go parameters
+BINARY_NAME=nitr0g3n
+GOBASE=$(shell pwd)
+GOBIN=$(GOBASE)/bin
+GOFILES=$(wildcard *.go)
 
-VERSION ?= $(shell git describe --tags --always --dirty)
-COMMIT ?= $(shell git rev-parse --short HEAD)
-DATE ?= $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
-LDFLAGS := -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DATE)
-STRIPPED_LDFLAGS := $(LDFLAGS) -s -w
-FAST_GCFLAGS := all=-B
-FAST_ENV := GOEXPERIMENT=inlfuncswithclosures
+# Build information
+VERSION?=dev
+GIT_COMMIT=$(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+BUILD_DATE=$(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-.PHONY: build build-fast build-pgo build-race test install clean profile
+# Build flags
+LDFLAGS=-ldflags "-X github.com/RowanDark/nitr0g3n/cmd/nitro.Version=$(VERSION) \
+                  -X github.com/RowanDark/nitr0g3n/cmd/nitro.GitCommit=$(GIT_COMMIT) \
+                  -X github.com/RowanDark/nitr0g3n/cmd/nitro.BuildDate=$(BUILD_DATE)"
 
-build:
-        mkdir -p $(BIN_DIR)
-        go build -trimpath -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/$(BINARY_NAME) $(CMD_PATH)
+## help: Display this help message
+help:
+	@echo "Available targets:"
+	@echo "  install     - Install nitr0g3n to GOPATH/bin"
+	@echo "  install-local - Build and install to /usr/local/bin (requires sudo)"
+	@echo "  build       - Build the binary to ./bin/"
+	@echo "  test        - Run tests"
+	@echo "  clean       - Remove built binaries"
+	@echo "  run         - Build and run (use ARGS='--domain example.com')"
 
-build-fast:
-        mkdir -p $(BIN_DIR)
-        $(FAST_ENV) go build -trimpath -ldflags "$(STRIPPED_LDFLAGS)" -gcflags "$(FAST_GCFLAGS)" -o $(BIN_DIR)/nitro-fast $(CMD_PATH)
-
-profile:
-        mkdir -p $(BUILD_DIR)
-        $(FAST_ENV) go test -run '^$$' -count=1 -cpuprofile $(PROFILE) ./...
-
-build-pgo: profile
-        mkdir -p $(BIN_DIR)
-        $(FAST_ENV) go build -trimpath -ldflags "$(LDFLAGS)" -pgo $(PROFILE) -o $(BIN_DIR)/nitro-pgo $(CMD_PATH)
-
-build-race:
-        mkdir -p $(BIN_DIR)
-        go build -trimpath -race -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/nitro-debug $(CMD_PATH)
-
-test:
-        go test -v -cover ./...
-
+## install: Install to GOPATH/bin
 install:
-        go install -trimpath -ldflags "$(LDFLAGS)" $(CMD_PATH)
+	@echo "Installing nitr0g3n to $(shell go env GOPATH)/bin..."
+	@go install $(LDFLAGS) .
+	@echo ""
+	@echo "✓ Installation complete!"
+	@echo ""
+	@echo "If 'nitr0g3n --version' doesn't work, add Go's bin to your PATH:"
+	@echo "  export PATH=\"\$$PATH:\$$(go env GOPATH)/bin\""
+	@echo ""
+	@echo "Add to ~/.bashrc or ~/.zshrc to make it permanent."
 
+## install-local: Install to /usr/local/bin (requires sudo)
+install-local: build
+	@echo "Installing to /usr/local/bin (requires sudo)..."
+	@sudo cp $(GOBIN)/$(BINARY_NAME) /usr/local/bin/
+	@echo "✓ Installed to /usr/local/bin/$(BINARY_NAME)"
+
+## build: Build binary to ./bin/
+build:
+	@echo "Building $(BINARY_NAME)..."
+	@mkdir -p $(GOBIN)
+	@go build $(LDFLAGS) -o $(GOBIN)/$(BINARY_NAME) .
+	@echo "✓ Built: $(GOBIN)/$(BINARY_NAME)"
+
+## test: Run tests
+test:
+	@echo "Running tests..."
+	@go test -v -cover ./...
+
+## clean: Remove built binaries
 clean:
-        rm -rf $(BIN_DIR)/ $(BUILD_DIR)/
+	@echo "Cleaning..."
+	@rm -rf $(GOBIN)
+	@go clean
+	@echo "✓ Cleaned"
+
+## run: Build and run (use ARGS='--domain example.com')
+run: build
+	@$(GOBIN)/$(BINARY_NAME) $(ARGS)

@@ -7,16 +7,49 @@ DNS bruteforcing and exports the resulting intelligence to local files or the
 
 ## Installation
 
-nitr0g3n requires Go 1.21 or later. Install from source with:
+nitr0g3n requires Go 1.21 or later.
 
+### Install via go install
 ```bash
 go install github.com/RowanDark/nitr0g3n@latest
 ```
 
-The binary will be installed as `nitr0g3n` in your `$GOPATH/bin` directory.
+### ⚠️ First Time Setup
 
-Alternatively, clone the repository and build the binary manually:
+After installation, you may need to add Go's bin directory to your PATH:
+```bash
+# Add Go bin to your PATH (choose based on your shell)
+echo 'export PATH="$PATH:$(go env GOPATH)/bin"' >> ~/.bashrc   # for bash
+echo 'export PATH="$PATH:$(go env GOPATH)/bin"' >> ~/.zshrc   # for zsh
 
+# Reload your shell configuration
+source ~/.bashrc  # or source ~/.zshrc
+```
+
+### Verify Installation
+```bash
+# Check if the binary is accessible
+nitr0g3n --version
+
+# If you see "command not found", the binary was installed but isn't in your PATH
+# Find it with:
+ls $(go env GOPATH)/bin/nitr0g3n
+
+# Run directly if needed:
+$(go env GOPATH)/bin/nitr0g3n --help
+```
+
+Run our installation checker:
+```bash
+curl -sSL https://raw.githubusercontent.com/RowanDark/nitr0g3n/main/scripts/check-install.sh | bash
+```
+
+Or manually:
+```bash
+nitr0g3n --version
+```
+
+### Alternative: Clone and Build
 ```bash
 git clone https://github.com/RowanDark/nitr0g3n.git
 cd nitr0g3n
@@ -24,11 +57,33 @@ go build -o nitro
 sudo mv nitro /usr/local/bin/
 ```
 
-If you would like the shorter `nitro` command to coexist with the installed
-`nitr0g3n` binary, create a simple alias:
+### Creating the "nitro" Shortcut
 
+If you prefer the shorter `nitro` command:
 ```bash
-ln -s "$(which nitr0g3n)" "$(dirname "$(which nitr0g3n)")/nitro"
+# Option 1: Symlink (recommended)
+ln -s $(go env GOPATH)/bin/nitr0g3n $(go env GOPATH)/bin/nitro
+
+# Option 2: Shell alias
+echo 'alias nitro="nitr0g3n"' >> ~/.bashrc  # or ~/.zshrc
+source ~/.bashrc
+```
+
+### Easy Installation with Make
+
+If you've cloned the repository:
+```bash
+cd nitr0g3n
+
+# Install to GOPATH/bin with helpful PATH instructions
+make install
+
+# Or install to /usr/local/bin (requires sudo)
+make install-local
+
+# Build locally
+make build
+./bin/nitr0g3n --help
 ```
 
 ## Usage
