@@ -2,14 +2,19 @@ package output
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/yourusername/nitr0g3n/config"
@@ -37,6 +42,16 @@ type HTTPService struct {
 	Snippet        string `json:"snippet,omitempty"`
 }
 
+const (
+	jsonBatchSize = 100
+	queueSize     = 1024
+)
+
+type flushRequest struct {
+	final bool
+	done  chan error
+}
+
 // Writer serialises discovery records to stdout or a file in a configured format.
 type Writer struct {
 	format        config.Format
@@ -44,8 +59,26 @@ type Writer struct {
 	closer        io.Closer
 	csvWriter     *csv.Writer
 	csvHeaderSent bool
-	encoder       *json.Encoder
 	buffered      *bufio.Writer
+
+	queue         chan Record
+	flushRequests chan flushRequest
+	done          chan struct{}
+	wg            sync.WaitGroup
+
+	errMu sync.Mutex
+	err   error
+
+	closed atomic.Bool
+
+	jsonPretty     bool
+	jsonBatch      []Record
+	jsonBatchLimit int
+	jsonArrayOpen  bool
+	jsonArrayCount int
+
+	signalChan chan os.Signal
+	signalDone chan struct{}
 }
 
 // NewWriter creates a writer configured according to the provided options.
@@ -71,30 +104,130 @@ func NewWriter(cfg *config.Config) (*Writer, error) {
 		closer = file
 	}
 
-	writer := &Writer{format: cfg.Format}
+	writer := &Writer{
+		format:         cfg.Format,
+		closer:         closer,
+		jsonPretty:     cfg.JSONPretty,
+		jsonBatchLimit: jsonBatchSize,
+		queue:          make(chan Record, queueSize),
+		flushRequests:  make(chan flushRequest, 1),
+		done:           make(chan struct{}),
+	}
 
-	switch cfg.Format {
-	case config.FormatJSON:
-		writer.encoder = json.NewEncoder(dest)
-		writer.encoder.SetEscapeHTML(false)
-		if cfg.JSONPretty {
-			writer.encoder.SetIndent("", "  ")
+	if !cfg.LiveOutput() {
+		bufferSize := cfg.OutputBuffer
+		if bufferSize <= 0 {
+			bufferSize = 64 * 1024
 		}
-	case config.FormatCSV:
-		writer.csvWriter = csv.NewWriter(dest)
-	case config.FormatTXT:
-		if buf, ok := dest.(*bufio.Writer); ok {
-			writer.buffered = buf
-		} else {
-			writer.buffered = bufio.NewWriter(dest)
-		}
+		writer.buffered = bufio.NewWriterSize(dest, bufferSize)
 		dest = writer.buffered
 	}
 
-	writer.destination = dest
-	writer.closer = closer
+	switch cfg.Format {
+	case config.FormatJSON:
+		writer.destination = dest
+		writer.jsonBatch = make([]Record, 0, writer.jsonBatchLimit)
+	case config.FormatCSV:
+		writer.csvWriter = csv.NewWriter(dest)
+		writer.destination = dest
+	case config.FormatTXT:
+		writer.destination = dest
+	default:
+		return nil, fmt.Errorf("unsupported output format: %s", cfg.Format)
+	}
+
+	writer.start()
+	writer.setupSignalHandling()
 
 	return writer, nil
+}
+
+func (w *Writer) start() {
+	w.wg.Add(1)
+	go w.run()
+}
+
+func (w *Writer) run() {
+	defer func() {
+		close(w.done)
+		w.wg.Done()
+	}()
+
+	for {
+		select {
+		case record, ok := <-w.queue:
+			if !ok {
+				if err := w.flushPending(true); err != nil {
+					w.setErr(err)
+				}
+				return
+			}
+			if err := w.handleRecord(record); err != nil {
+				w.setErr(err)
+				return
+			}
+		case req, ok := <-w.flushRequests:
+			if !ok {
+				w.flushRequests = nil
+				continue
+			}
+			err := w.flushPending(req.final)
+			if req.done != nil {
+				req.done <- err
+			}
+			if err != nil {
+				w.setErr(err)
+			}
+		}
+	}
+}
+
+func (w *Writer) handleRecord(record Record) error {
+	switch w.format {
+	case config.FormatJSON:
+		w.jsonBatch = append(w.jsonBatch, record)
+		if len(w.jsonBatch) >= w.jsonBatchLimit {
+			if err := w.flushJSONBatch(false); err != nil {
+				return err
+			}
+			if err := w.flushWriters(); err != nil {
+				return err
+			}
+		}
+		return nil
+	case config.FormatCSV:
+		return w.writeCSVRecord(record)
+	case config.FormatTXT:
+		return w.writeTXTRecord(record)
+	default:
+		return fmt.Errorf("unsupported output format: %s", w.format)
+	}
+}
+
+func (w *Writer) flushPending(final bool) error {
+	if w.format == config.FormatJSON {
+		if err := w.flushJSONBatch(final); err != nil {
+			return err
+		}
+	}
+	return w.flushWriters()
+}
+
+func (w *Writer) flushWriters() error {
+	if w.csvWriter != nil {
+		w.csvWriter.Flush()
+		if err := w.csvWriter.Error(); err != nil {
+			return err
+		}
+	}
+
+	if w.buffered != nil {
+		if err := w.buffered.Flush(); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // WriteRecord persists a single discovery record using the configured format.
@@ -107,16 +240,164 @@ func (w *Writer) WriteRecord(record Record) error {
 		record.DNSRecords = map[string][]string{}
 	}
 
-	switch w.format {
-	case config.FormatJSON:
-		return w.encoder.Encode(record)
-	case config.FormatCSV:
-		return w.writeCSVRecord(record)
-	case config.FormatTXT:
-		return w.writeTXTRecord(record)
-	default:
-		return fmt.Errorf("unsupported output format: %s", w.format)
+	if err := w.Error(); err != nil {
+		return err
 	}
+
+	if w.closed.Load() {
+		return fmt.Errorf("writer closed")
+	}
+
+	select {
+	case w.queue <- record:
+		return nil
+	case <-w.done:
+		return w.Error()
+	}
+}
+
+func (w *Writer) setupSignalHandling() {
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
+	w.signalChan = ch
+	w.signalDone = make(chan struct{})
+	go func() {
+		defer close(w.signalDone)
+		for range ch {
+			_ = w.Flush()
+		}
+	}()
+}
+
+// Flush drains any buffered data to the underlying destination without closing it.
+func (w *Writer) Flush() error {
+	if w.closed.Load() {
+		return w.Error()
+	}
+
+	if err := w.Error(); err != nil {
+		return err
+	}
+
+	done := make(chan error, 1)
+	req := flushRequest{final: false, done: done}
+
+	select {
+	case w.flushRequests <- req:
+	case <-w.done:
+		return w.Error()
+	}
+
+	err := <-done
+	if err != nil {
+		w.setErr(err)
+		return err
+	}
+
+	return nil
+}
+
+func (w *Writer) Error() error {
+	w.errMu.Lock()
+	defer w.errMu.Unlock()
+	return w.err
+}
+
+func (w *Writer) setErr(err error) {
+	if err == nil {
+		return
+	}
+	w.errMu.Lock()
+	if w.err == nil {
+		w.err = err
+	}
+	w.errMu.Unlock()
+}
+
+func (w *Writer) flushJSONBatch(final bool) error {
+	if len(w.jsonBatch) > 0 {
+		if !w.jsonArrayOpen {
+			if _, err := fmt.Fprint(w.destination, "[\n"); err != nil {
+				return err
+			}
+			w.jsonArrayOpen = true
+		}
+
+		for i, record := range w.jsonBatch {
+			if w.jsonArrayCount > 0 || i > 0 {
+				if _, err := fmt.Fprint(w.destination, ",\n"); err != nil {
+					return err
+				}
+			}
+
+			data, err := w.marshalRecord(record)
+			if err != nil {
+				return err
+			}
+
+			if w.jsonPretty {
+				if err := w.writePrettyJSON(data); err != nil {
+					return err
+				}
+			} else {
+				if _, err := w.destination.Write(data); err != nil {
+					return err
+				}
+			}
+
+			w.jsonArrayCount++
+		}
+
+		w.jsonBatch = w.jsonBatch[:0]
+	}
+
+	if final {
+		if !w.jsonArrayOpen {
+			if _, err := fmt.Fprint(w.destination, "[]\n"); err != nil {
+				return err
+			}
+			w.jsonArrayOpen = true
+			return nil
+		}
+
+		if w.jsonArrayCount > 0 {
+			if _, err := fmt.Fprint(w.destination, "\n"); err != nil {
+				return err
+			}
+		}
+
+		if _, err := fmt.Fprint(w.destination, "]\n"); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (w *Writer) marshalRecord(record Record) ([]byte, error) {
+	if w.jsonPretty {
+		return json.MarshalIndent(record, "", "  ")
+	}
+	return json.Marshal(record)
+}
+
+func (w *Writer) writePrettyJSON(data []byte) error {
+	trimmed := bytes.TrimRight(data, "\n")
+	lines := bytes.Split(trimmed, []byte("\n"))
+	for i, line := range lines {
+		if _, err := w.destination.Write([]byte("  ")); err != nil {
+			return err
+		}
+		if _, err := w.destination.Write(line); err != nil {
+			return err
+		}
+		if i < len(lines)-1 {
+			if _, err := w.destination.Write([]byte("\n")); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func (w *Writer) writeCSVRecord(record Record) error {
@@ -211,10 +492,6 @@ func (w *Writer) writeTXTRecord(record Record) error {
 		return err
 	}
 
-	if w.buffered != nil {
-		return w.buffered.Flush()
-	}
-
 	return nil
 }
 
@@ -279,22 +556,36 @@ func flattenHTTPServices(services []HTTPService) string {
 
 // Close flushes any buffered data and closes owned file handles.
 func (w *Writer) Close() error {
-	if w.csvWriter != nil {
-		w.csvWriter.Flush()
-		if err := w.csvWriter.Error(); err != nil {
+	if !w.closed.CompareAndSwap(false, true) {
+		w.wg.Wait()
+		if err := w.Error(); err != nil {
 			return err
+		}
+		if w.closer != nil {
+			return w.closer.Close()
+		}
+		return nil
+	}
+
+	if w.signalChan != nil {
+		signal.Stop(w.signalChan)
+		close(w.signalChan)
+		if w.signalDone != nil {
+			<-w.signalDone
 		}
 	}
 
-	if w.buffered != nil {
-		if err := w.buffered.Flush(); err != nil {
-			return err
-		}
-	}
+	close(w.queue)
+	w.wg.Wait()
 
+	err := w.Error()
 	if w.closer != nil {
-		return w.closer.Close()
+		if err != nil {
+			_ = w.closer.Close()
+		} else if cerr := w.closer.Close(); cerr != nil {
+			err = cerr
+		}
 	}
 
-	return nil
+	return err
 }
