@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yourusername/nitr0g3n/output"
+	"github.com/RowanDark/nitr0g3n/output"
 )
 
 func TestNewExporterValidation(t *testing.T) {

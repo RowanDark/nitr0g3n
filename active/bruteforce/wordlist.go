@@ -12,7 +12,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/yourusername/nitr0g3n/internal/intern"
+	"github.com/RowanDark/nitr0g3n/internal/intern"
 )
 
 //go:embed wordlists/top-1000.txt

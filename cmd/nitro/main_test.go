@@ -1,4 +1,4 @@
-package main
+package nitro
 
 import (
 	"bytes"
@@ -7,11 +7,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yourusername/nitr0g3n/config"
-	"github.com/yourusername/nitr0g3n/logging"
-	"github.com/yourusername/nitr0g3n/passive"
-	"github.com/yourusername/nitr0g3n/resolver"
-	"github.com/yourusername/nitr0g3n/stats"
+	"github.com/RowanDark/nitr0g3n/config"
+	"github.com/RowanDark/nitr0g3n/logging"
+	"github.com/RowanDark/nitr0g3n/passive"
+	"github.com/RowanDark/nitr0g3n/resolver"
+	"github.com/RowanDark/nitr0g3n/stats"
 )
 
 type stubSource struct{ name string }

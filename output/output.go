@@ -17,7 +17,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/yourusername/nitr0g3n/config"
+	"github.com/RowanDark/nitr0g3n/config"
 )
 
 // Record captures the structured discovery data shared with downstream tooling.

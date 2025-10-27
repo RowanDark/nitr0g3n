@@ -13,12 +13,22 @@ nitr0g3n requires Go 1.21 or later. Install from source with:
 go install github.com/RowanDark/nitr0g3n@latest
 ```
 
-Alternatively clone the repository and build the binary:
+The binary will be installed as `nitr0g3n` in your `$GOPATH/bin` directory.
+
+Alternatively, clone the repository and build the binary manually:
 
 ```bash
 git clone https://github.com/RowanDark/nitr0g3n.git
 cd nitr0g3n
-go build ./...
+go build -o nitro
+sudo mv nitro /usr/local/bin/
+```
+
+If you would like the shorter `nitro` command to coexist with the installed
+`nitr0g3n` binary, create a simple alias:
+
+```bash
+ln -s "$(which nitr0g3n)" "$(dirname "$(which nitr0g3n)")/nitro"
 ```
 
 ## Usage
