@@ -30,11 +30,14 @@ func TestJSONWriter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reading file: %v", err)
 	}
-	var decoded Record
+	var decoded []Record
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		t.Fatalf("decoding json: %v", err)
 	}
-	if decoded.Timestamp == "" {
+	if len(decoded) != 1 {
+		t.Fatalf("expected single record, got %d", len(decoded))
+	}
+	if decoded[0].Timestamp == "" {
 		t.Fatalf("expected timestamp to be populated")
 	}
 }
@@ -57,7 +60,7 @@ func TestJSONWriterPretty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reading file: %v", err)
 	}
-	if !strings.Contains(string(data), "\n  \"subdomain\"") {
+	if !strings.Contains(string(data), "\n    \"subdomain\"") {
 		t.Fatalf("expected pretty-printed json, got: %s", string(data))
 	}
 }
@@ -163,6 +166,26 @@ func TestLoadRecords(t *testing.T) {
 	}
 	if err := file.Close(); err != nil {
 		t.Fatalf("close file: %v", err)
+	}
+
+	loaded, err := LoadRecords(tmp)
+	if err != nil {
+		t.Fatalf("load records: %v", err)
+	}
+	if len(loaded) != len(records) {
+		t.Fatalf("expected %d record(s), got %d", len(records), len(loaded))
+	}
+}
+
+func TestLoadRecordsJSONArray(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "records.json")
+	records := []Record{{Subdomain: "array.example.com"}, {Subdomain: "array2.example.com"}}
+	data, err := json.Marshal(records)
+	if err != nil {
+		t.Fatalf("marshal records: %v", err)
+	}
+	if err := os.WriteFile(tmp, append(data, '\n'), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
 	}
 
 	loaded, err := LoadRecords(tmp)

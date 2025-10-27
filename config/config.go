@@ -31,6 +31,7 @@ type Config struct {
 	Domain             string
 	Mode               string
 	OutputPath         string
+	OutputBuffer       int
 	DiffPath           string
 	Verbose            bool
 	Silent             bool
@@ -84,6 +85,7 @@ func BindFlags(cmd *cobra.Command) *Config {
 	flags.StringVarP(&cfg.Domain, "domain", "d", "", "Target domain to investigate")
 	flags.StringVarP(&cfg.Mode, "mode", "m", string(ModePassive), "Enumeration mode to use (active, passive, or all)")
 	flags.StringVarP(&cfg.OutputPath, "output", "o", "", "Optional file path to write results")
+	flags.IntVar(&cfg.OutputBuffer, "output-buffer", 64*1024, "Size of the output buffer in bytes")
 	flags.StringVar(&cfg.DiffPath, "diff", "", "Optional path to a previous results file to diff against")
 	flags.BoolVarP(&cfg.Verbose, "verbose", "v", false, "Enable verbose logging output")
 	flags.BoolVar(&cfg.Silent, "silent", false, "Suppress non-essential console output (only emit final results)")
@@ -197,6 +199,10 @@ func (c *Config) Validate() error {
 
 	if c.WildcardBatch <= 0 {
 		c.WildcardBatch = 3
+	}
+
+	if c.OutputBuffer <= 0 {
+		c.OutputBuffer = 64 * 1024
 	}
 	if c.WildcardBatch > 5 {
 		c.WildcardBatch = 5
