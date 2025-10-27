@@ -57,11 +57,13 @@ type Config struct {
 
 	VirusTotalAPIKey string
 	FilterWildcards  bool
+	SkipWildcards    bool
 	Scope            []string
 	UniqueIPs        bool
 	ProbeHTTP        bool
 	ScreenshotDir    string
 	ParallelSources  bool
+	WildcardBatch    int
 
 	Export0xGenEndpoint string
 	APIKey              string
@@ -107,6 +109,7 @@ func BindFlags(cmd *cobra.Command) *Config {
 	flags.BoolVar(&cfg.Permutations, "permutations", true, "Enable wordlist permutations when bruteforcing")
 	flags.IntVar(&cfg.PermutationThreads, "permutation-threads", 0, "Number of threads for permutation generation (0 for auto)")
 	flags.BoolVar(&cfg.FilterWildcards, "filter-wildcards", true, "Filter wildcard DNS and generic CDN responses")
+	flags.BoolVar(&cfg.SkipWildcards, "skip-wildcards", false, "Skip enumeration entirely when wildcard DNS is detected")
 	flags.StringSliceVar(&cfg.Scope, "scope", nil, "Restrict output to subdomains matching the provided glob patterns or TLD suffixes")
 	flags.BoolVar(&cfg.UniqueIPs, "unique-ips", false, "Only output subdomains that resolve to new unique IP addresses")
 	flags.BoolVar(&cfg.ProbeHTTP, "probe", false, "Probe discovered subdomains over HTTP and HTTPS to capture status codes")
@@ -119,6 +122,7 @@ func BindFlags(cmd *cobra.Command) *Config {
 	flags.IntVar(&cfg.GCPercent, "gc-percent", 100, "Set the Go runtime GC target percentage")
 	cfg.ParallelSources = true
 	flags.BoolVar(&cfg.ParallelSources, "parallel-sources", cfg.ParallelSources, "Execute passive sources concurrently")
+	flags.IntVar(&cfg.WildcardBatch, "wildcard-batch", 3, "Number of concurrent DNS queries to issue when detecting wildcards")
 
 	return cfg
 }
@@ -190,6 +194,13 @@ func (c *Config) Validate() error {
 	c.Export0xGenEndpoint = strings.TrimSpace(c.Export0xGenEndpoint)
 	c.APIKey = strings.TrimSpace(c.APIKey)
 	c.ScreenshotDir = strings.TrimSpace(c.ScreenshotDir)
+
+	if c.WildcardBatch <= 0 {
+		c.WildcardBatch = 3
+	}
+	if c.WildcardBatch > 5 {
+		c.WildcardBatch = 5
+	}
 
 	if c.Threads <= 0 {
 		c.Threads = 50

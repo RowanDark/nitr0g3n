@@ -340,22 +340,59 @@ func runCycle(ctx context.Context, cfg *config.Config, logger *logging.Logger, l
 	zoneRecords := make(map[string]map[string][]string)
 	totalDiscovered := 0
 
+	resolveOpts := resolver.Options{
+		Server:       cfg.DNSServer,
+		Timeout:      cfg.DNSTimeout,
+		RateLimiter:  limiter,
+		CacheEnabled: cfg.DNSCache,
+		CacheSize:    cfg.DNSCacheSize,
+	}
+
+	var wildcardProfile filters.WildcardProfile
+	var wildcardResolver *resolver.Resolver
+	wildcardDetectionEnabled := (cfg.FilterWildcards || cfg.SkipWildcards) && strings.TrimSpace(cfg.Domain) != ""
+	if wildcardDetectionEnabled {
+		var err error
+		wildcardResolver, err = resolver.New(resolveOpts)
+		if err != nil {
+			return fmt.Errorf("configuring resolver: %w", err)
+		}
+
+		const wildcardSamples = 5
+		profile, err := filters.DetectWildcard(ctx, wildcardResolver, cfg.Domain, wildcardSamples, cfg.WildcardBatch)
+		if err != nil {
+			if logger != nil {
+				logger.Warnf("Wildcard detection error: %v", err)
+			}
+		} else {
+			wildcardProfile = profile
+			if wildcardProfile.Active() && logger != nil {
+				logger.Infof("Wildcard DNS detected; matching resolutions will be filtered")
+			}
+		}
+
+		if cfg.SkipWildcards && wildcardProfile.Active() {
+			if logger != nil {
+				logger.Infof("Skipping enumeration for %s due to wildcard DNS (--skip-wildcards)", cfg.Domain)
+			}
+			return nil
+		}
+	}
+
 	if cfg.Mode == config.ModePassive || cfg.Mode == config.ModeAll {
 		passiveSources, err := buildPassiveSources(cfg, httpClient)
 		if err != nil {
 			return err
 		}
 
-		resolveOpts := resolver.Options{
-			Server:       cfg.DNSServer,
-			Timeout:      cfg.DNSTimeout,
-			RateLimiter:  limiter,
-			CacheEnabled: cfg.DNSCache,
-			CacheSize:    cfg.DNSCacheSize,
-		}
-		dnsResolver, err := resolver.New(resolveOpts)
-		if err != nil {
-			return fmt.Errorf("configuring resolver: %w", err)
+		dnsResolver := wildcardResolver
+		if dnsResolver == nil {
+			dnsResolver, err = resolver.New(resolveOpts)
+			if err != nil {
+				return fmt.Errorf("configuring resolver: %w", err)
+			}
+		} else {
+			wildcardResolver = nil
 		}
 
 		hostnamesCh := make(chan string)
@@ -423,7 +460,7 @@ func runCycle(ctx context.Context, cfg *config.Config, logger *logging.Logger, l
 			}
 		}()
 
-		count, err := processResolutions(ctx, cfg, logger, writer, exporter, diffBaseline, diffRemaining, diffStats, watchKnown, notifier, tracker, verboseEnabled, subdomainSources, &subdomainSourcesMu, zoneRecords, dnsResolver, limiter, resultsCh)
+		count, err := processResolutions(ctx, cfg, logger, writer, exporter, diffBaseline, diffRemaining, diffStats, watchKnown, notifier, tracker, verboseEnabled, subdomainSources, &subdomainSourcesMu, zoneRecords, wildcardProfile, limiter, resultsCh)
 		if err != nil {
 			passiveWG.Wait()
 			return err
@@ -490,13 +527,6 @@ func runCycle(ctx context.Context, cfg *config.Config, logger *logging.Logger, l
 			}
 			sort.Strings(subdomains)
 
-			resolveOpts := resolver.Options{
-				Server:       cfg.DNSServer,
-				Timeout:      cfg.DNSTimeout,
-				RateLimiter:  limiter,
-				CacheEnabled: cfg.DNSCache,
-				CacheSize:    cfg.DNSCacheSize,
-			}
 			dnsResolver, err := resolver.New(resolveOpts)
 			if err != nil {
 				return fmt.Errorf("configuring resolver: %w", err)
@@ -504,7 +534,7 @@ func runCycle(ctx context.Context, cfg *config.Config, logger *logging.Logger, l
 
 			resultsCh := dnsResolver.ResolveAll(ctx, subdomains, cfg.Threads)
 
-			count, err := processResolutions(ctx, cfg, logger, writer, exporter, diffBaseline, diffRemaining, diffStats, watchKnown, notifier, tracker, verboseEnabled, subdomainSources, &subdomainSourcesMu, zoneRecords, dnsResolver, limiter, resultsCh)
+			count, err := processResolutions(ctx, cfg, logger, writer, exporter, diffBaseline, diffRemaining, diffStats, watchKnown, notifier, tracker, verboseEnabled, subdomainSources, &subdomainSourcesMu, zoneRecords, wildcardProfile, limiter, resultsCh)
 			if err != nil {
 				return err
 			}
@@ -529,24 +559,9 @@ func runCycle(ctx context.Context, cfg *config.Config, logger *logging.Logger, l
 	return nil
 }
 
-func processResolutions(ctx context.Context, cfg *config.Config, logger *logging.Logger, writer *output.Writer, exporter *oxg3n.Exporter, diffBaseline map[string]output.Record, diffRemaining map[string]output.Record, diffStats *diffSummary, watchKnown map[string]output.Record, notifier *webhook.Notifier, tracker *stats.Tracker, verboseEnabled bool, subdomainSources map[string][]string, subdomainSourcesMu *sync.RWMutex, zoneRecords map[string]map[string][]string, dnsResolver *resolver.Resolver, limiter *ratelimit.Limiter, resultsCh <-chan resolver.Result) (int, error) {
+func processResolutions(ctx context.Context, cfg *config.Config, logger *logging.Logger, writer *output.Writer, exporter *oxg3n.Exporter, diffBaseline map[string]output.Record, diffRemaining map[string]output.Record, diffStats *diffSummary, watchKnown map[string]output.Record, notifier *webhook.Notifier, tracker *stats.Tracker, verboseEnabled bool, subdomainSources map[string][]string, subdomainSourcesMu *sync.RWMutex, zoneRecords map[string]map[string][]string, wildcardProfile filters.WildcardProfile, limiter *ratelimit.Limiter, resultsCh <-chan resolver.Result) (int, error) {
 	if resultsCh == nil {
 		return 0, nil
-	}
-
-	var wildcardProfile filters.WildcardProfile
-	if cfg.FilterWildcards && dnsResolver != nil {
-		profile, err := filters.DetectWildcard(ctx, dnsResolver, cfg.Domain, 3)
-		if err != nil {
-			if logger != nil {
-				logger.Warnf("Wildcard detection error: %v", err)
-			}
-		} else {
-			wildcardProfile = profile
-			if wildcardProfile.Active() && logger != nil {
-				logger.Infof("Wildcard DNS detected; matching resolutions will be filtered")
-			}
-		}
 	}
 
 	var probeClient *probe.Client
