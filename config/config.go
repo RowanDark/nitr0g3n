@@ -33,6 +33,8 @@ type Config struct {
 	OutputPath         string
 	OutputBuffer       int
 	DiffPath           string
+	CPUProfile         string
+	MemProfile         string
 	Verbose            bool
 	Silent             bool
 	ConfigPath         string
@@ -87,6 +89,8 @@ func BindFlags(cmd *cobra.Command) *Config {
 	flags.StringVarP(&cfg.OutputPath, "output", "o", "", "Optional file path to write results")
 	flags.IntVar(&cfg.OutputBuffer, "output-buffer", 64*1024, "Size of the output buffer in bytes")
 	flags.StringVar(&cfg.DiffPath, "diff", "", "Optional path to a previous results file to diff against")
+	flags.StringVar(&cfg.CPUProfile, "cpuprofile", "", "Write a CPU profile to the specified file")
+	flags.StringVar(&cfg.MemProfile, "memprofile", "", "Write a memory profile to the specified file")
 	flags.BoolVarP(&cfg.Verbose, "verbose", "v", false, "Enable verbose logging output")
 	flags.BoolVar(&cfg.Silent, "silent", false, "Suppress non-essential console output (only emit final results)")
 	flags.StringVar(&cfg.LogLevel, "log-level", "info", "Logging level (debug, info, warn, error)")
@@ -192,6 +196,8 @@ func (c *Config) Validate() error {
 		c.APIKey = strings.TrimSpace(os.Getenv("NITR0G3N_API_KEY"))
 	}
 
+	c.CPUProfile = strings.TrimSpace(c.CPUProfile)
+	c.MemProfile = strings.TrimSpace(c.MemProfile)
 	c.DiffPath = strings.TrimSpace(c.DiffPath)
 	c.Export0xGenEndpoint = strings.TrimSpace(c.Export0xGenEndpoint)
 	c.APIKey = strings.TrimSpace(c.APIKey)
