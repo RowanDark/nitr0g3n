@@ -1,4 +1,4 @@
-package main
+package nitro
 
 import (
 	"bufio"
@@ -21,24 +21,24 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/yourusername/nitr0g3n/active/bruteforce"
-	"github.com/yourusername/nitr0g3n/active/zonetransfer"
-	"github.com/yourusername/nitr0g3n/config"
-	"github.com/yourusername/nitr0g3n/exporter/oxg3n"
-	"github.com/yourusername/nitr0g3n/filters"
-	"github.com/yourusername/nitr0g3n/logging"
-	"github.com/yourusername/nitr0g3n/netutil"
-	"github.com/yourusername/nitr0g3n/notifier/webhook"
-	"github.com/yourusername/nitr0g3n/output"
-	"github.com/yourusername/nitr0g3n/passive"
-	"github.com/yourusername/nitr0g3n/passive/certtransparency"
-	"github.com/yourusername/nitr0g3n/passive/hackertarget"
-	"github.com/yourusername/nitr0g3n/passive/threatcrowd"
-	"github.com/yourusername/nitr0g3n/passive/virustotal"
-	"github.com/yourusername/nitr0g3n/probe"
-	"github.com/yourusername/nitr0g3n/ratelimit"
-	"github.com/yourusername/nitr0g3n/resolver"
-	"github.com/yourusername/nitr0g3n/stats"
+	"github.com/RowanDark/nitr0g3n/active/bruteforce"
+	"github.com/RowanDark/nitr0g3n/active/zonetransfer"
+	"github.com/RowanDark/nitr0g3n/config"
+	"github.com/RowanDark/nitr0g3n/exporter/oxg3n"
+	"github.com/RowanDark/nitr0g3n/filters"
+	"github.com/RowanDark/nitr0g3n/logging"
+	"github.com/RowanDark/nitr0g3n/netutil"
+	"github.com/RowanDark/nitr0g3n/notifier/webhook"
+	"github.com/RowanDark/nitr0g3n/output"
+	"github.com/RowanDark/nitr0g3n/passive"
+	"github.com/RowanDark/nitr0g3n/passive/certtransparency"
+	"github.com/RowanDark/nitr0g3n/passive/hackertarget"
+	"github.com/RowanDark/nitr0g3n/passive/threatcrowd"
+	"github.com/RowanDark/nitr0g3n/passive/virustotal"
+	"github.com/RowanDark/nitr0g3n/probe"
+	"github.com/RowanDark/nitr0g3n/ratelimit"
+	"github.com/RowanDark/nitr0g3n/resolver"
+	"github.com/RowanDark/nitr0g3n/stats"
 )
 
 var (
@@ -1295,7 +1295,8 @@ func equalStringSlices(a, b []string) bool {
 	return true
 }
 
-func main() {
+// Execute runs the nitr0g3n CLI.
+func Execute() {
 	if err := rootCmd.Execute(); err != nil {
 		if !strings.HasSuffix(err.Error(), "help requested") {
 			fmt.Fprintln(os.Stderr, err)

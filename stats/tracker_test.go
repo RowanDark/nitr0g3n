@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yourusername/nitr0g3n/logging"
+	"github.com/RowanDark/nitr0g3n/logging"
 )
 
 func TestTrackerSnapshot(t *testing.T) {

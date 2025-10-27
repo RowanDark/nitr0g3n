@@ -18,9 +18,9 @@ import (
 
 	"github.com/miekg/dns"
 
-	"github.com/yourusername/nitr0g3n/internal/dnspool"
-	"github.com/yourusername/nitr0g3n/internal/intern"
-	"github.com/yourusername/nitr0g3n/ratelimit"
+	"github.com/RowanDark/nitr0g3n/internal/dnspool"
+	"github.com/RowanDark/nitr0g3n/internal/intern"
+	"github.com/RowanDark/nitr0g3n/ratelimit"
 )
 
 type Options struct {

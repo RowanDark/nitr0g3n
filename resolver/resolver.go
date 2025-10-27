@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yourusername/nitr0g3n/ratelimit"
+	"github.com/RowanDark/nitr0g3n/ratelimit"
 )
 
 // dnsResolver captures the subset of the net.Resolver API the package relies on.

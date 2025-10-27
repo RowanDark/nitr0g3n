@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yourusername/nitr0g3n/resolver"
+	"github.com/RowanDark/nitr0g3n/resolver"
 )
 
 // DNSResolver captures the subset of resolver.Resolver required for wildcard detection.

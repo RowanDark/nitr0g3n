@@ -1,4 +1,4 @@
-module github.com/yourusername/nitr0g3n
+module github.com/RowanDark/nitr0g3n
 
 go 1.24.3
 

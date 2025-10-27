@@ -5,7 +5,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/yourusername/nitr0g3n/resolver"
+	"github.com/RowanDark/nitr0g3n/resolver"
 )
 
 type stubResolver struct {

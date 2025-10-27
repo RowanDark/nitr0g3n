@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yourusername/nitr0g3n/ratelimit"
+	"github.com/RowanDark/nitr0g3n/ratelimit"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)

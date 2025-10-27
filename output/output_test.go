@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yourusername/nitr0g3n/config"
+	"github.com/RowanDark/nitr0g3n/config"
 )
 
 func TestJSONWriter(t *testing.T) {

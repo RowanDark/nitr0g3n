@@ -11,7 +11,7 @@ import (
 	"golang.org/x/net/http2"
 	"golang.org/x/sync/singleflight"
 
-	"github.com/yourusername/nitr0g3n/ratelimit"
+	"github.com/RowanDark/nitr0g3n/ratelimit"
 )
 
 type limitingRoundTripper struct {
