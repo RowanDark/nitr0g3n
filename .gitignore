@@ -1,0 +1,4 @@
+bin/
+benchmark/results/
+benchmark/*.json
+__pycache__/

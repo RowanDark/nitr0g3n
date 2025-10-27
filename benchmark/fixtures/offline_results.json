@@ -1,0 +1,44 @@
+[
+  {
+    "scenario": "Example.com passive baseline",
+    "domain": "example.com",
+    "mode": "passive",
+    "total_time_seconds": 2.5,
+    "queries_per_second": 4.8,
+    "time_to_first_result": 0.7,
+    "total_results": 12,
+    "command": ["nitro", "--domain", "example.com", "--mode", "passive"],
+    "stderr": [
+      "Enumerating domain example.com using passive mode (format=txt)",
+      "Scan complete for example.com: 12 subdomains discovered (10 resolved, 2 unresolved)"
+    ]
+  },
+  {
+    "scenario": "Google.com passive baseline",
+    "domain": "google.com",
+    "mode": "passive",
+    "total_time_seconds": 3.1,
+    "queries_per_second": 15.3,
+    "time_to_first_result": 0.4,
+    "total_results": 47,
+    "command": ["nitro", "--domain", "google.com", "--mode", "passive"],
+    "stderr": [
+      "Enumerating domain google.com using passive mode (format=txt)",
+      "Scan complete for google.com: 47 subdomains discovered (44 resolved, 3 unresolved)"
+    ]
+  },
+  {
+    "scenario": "GitHub.com passive baseline",
+    "domain": "github.com",
+    "mode": "passive",
+    "total_time_seconds": 4.6,
+    "queries_per_second": 9.5,
+    "time_to_first_result": 0.9,
+    "total_results": 44,
+    "command": ["nitro", "--domain", "github.com", "--mode", "passive"],
+    "stderr": [
+      "Enumerating domain github.com using passive mode (format=txt)",
+      "Scan complete for github.com: 44 subdomains discovered (40 resolved, 4 unresolved)"
+    ]
+  }
+]
