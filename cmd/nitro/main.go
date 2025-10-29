@@ -41,33 +41,25 @@ import (
 	"github.com/RowanDark/nitr0g3n/stats"
 )
 
+// Version information - update with releases
 var (
-	version = "dev"
-	commit  = "unknown"
-	date    = "unknown"
+	Version   = "dev"
+	GitCommit = "unknown"
+	BuildDate = "unknown"
 )
 
 var cfg *config.Config
 
 var rootCmd = &cobra.Command{
-	Use:     "nitro",
-	Aliases: []string{"nitr0"},
-	Short:   "nitr0g3n is a reconnaissance toolkit for domain intelligence.",
-	Long: `nitr0g3n is an extensible reconnaissance toolkit focused on domain intelligence.
-It provides active and passive discovery workflows to help analysts profile
-infrastructure quickly and accurately.`,
+	Use:     "nitr0g3n",
+	Aliases: []string{"nitro", "nitr0"},
+	Short:   "nitr0g3n - High-speed DNS and subdomain enumeration tool",
+	Long: `nitr0g3n is a reconnaissance toolkit focused on discovering subdomains 
+and DNS intelligence for a target domain. It combines passive data sources with 
+active DNS bruteforcing and exports the resulting intelligence to local files 
+or the 0xg3n home hub.`,
+	Version: Version,
 	RunE: func(cmd *cobra.Command, args []string) (runErr error) {
-		showVersion, err := cmd.Flags().GetBool("version")
-		if err != nil {
-			return err
-		}
-		if showVersion {
-			fmt.Fprintf(cmd.OutOrStdout(), "nitr0g3n version: %s\n", version)
-			fmt.Fprintf(cmd.OutOrStdout(), "commit: %s\n", commit)
-			fmt.Fprintf(cmd.OutOrStdout(), "built: %s\n", date)
-			return nil
-		}
-
 		ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
 
@@ -194,7 +186,14 @@ infrastructure quickly and accurately.`,
 
 func init() {
 	cfg = config.BindFlags(rootCmd)
-	rootCmd.PersistentFlags().BoolP("version", "V", false, "Show nitr0g3n version information and exit")
+	rootCmd.Annotations = map[string]string{
+		"GitCommit": GitCommit,
+		"BuildDate": BuildDate,
+	}
+	rootCmd.SetVersionTemplate(`{{with .Name}}{{printf "%s " .}}{{end}}{{printf "version %s" .Version}}
+Git Commit: {{if eq (index .Annotations "GitCommit") "unknown"}}Not available{{else}}{{index .Annotations "GitCommit"}}{{end}}
+Build Date: {{if eq (index .Annotations "BuildDate") "unknown"}}Not available{{else}}{{index .Annotations "BuildDate"}}{{end}}
+`)
 }
 
 func gatherTargets(input io.Reader, domain string) ([]string, error) {
